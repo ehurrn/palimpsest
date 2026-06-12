@@ -1,7 +1,19 @@
 # Work Log
 
 ## 2026-06-12
-- Started Task 2: Job Broker Service.
+- Started Task 4: Worker Daemon.
+- Completed Task 3: Harvester CLI.
+  - Implemented `palimpsest/harvester.py` with `catalog`, `fetch`, and `status` subcommands.
+  - Supported robust rate-limiting (RPS), exponential backoff on 429/503, and WAF protection.
+  - Designed the HTML scraper to parse Search Results tables and extract document metadata.
+  - Added download idempotency (checking disk existence + SHA256 matches).
+  - Wrote and passed comprehensive unit tests in `tests/test_harvester.py`.
+- Completed Task 2: Job Broker Service.
+  - Implemented the FastAPI-based broker in `palimpsest/broker.py`.
+  - Exposed endpoints `/enqueue`, `/lease`, `/complete`, `/fail`, `/heartbeat`, and `/file/{doc_id}.pdf`.
+  - Integrated worker lease-loop mechanics, heartbeats, and database updates upon task completion.
+  - Implemented a lease-reaping loop for handling inactive worker leases safely.
+  - Wrote and passed comprehensive unit tests in `tests/test_broker.py`.
 - Completed Task 1: Repo Scaffold, Config, and DB Schema.
   - Scaffolded the repository, defined dependencies in `pyproject.toml`, and created `config.toml`.
   - Implemented configuration loading with validation in `palimpsest/config.py`.
