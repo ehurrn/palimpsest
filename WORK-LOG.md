@@ -1,7 +1,12 @@
 # Work Log
 
 ## 2026-06-12
-- Started Task 1: Repo Scaffold, Config, and DB Schema.
+- Started Task 2: Job Broker Service.
+- Completed Task 1: Repo Scaffold, Config, and DB Schema.
+  - Scaffolded the repository, defined dependencies in `pyproject.toml`, and created `config.toml`.
+  - Implemented configuration loading with validation in `palimpsest/config.py`.
+  - Designed the SQLite schema in `palimpsest/db.py` (WAL mode, foreign keys enabled).
+  - Wrote and passed comprehensive unit tests in `tests/test_config.py` and `tests/test_db.py`.
 - Completed Task 0b: OpenNet Mechanics Probe.
   - Fetched and analyzed `https://www.osti.gov/robots.txt`.
   - Probed the search endpoints (both GET and POST). Verified that GET requests support all required query parameters including pagination.
