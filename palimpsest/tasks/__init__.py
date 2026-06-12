@@ -14,3 +14,15 @@ def handler(job_type: str):
         HANDLERS[job_type] = func
         return func
     return decorator
+
+# Import submodules to trigger registration
+try:
+    import palimpsest.tasks.ocr
+except ImportError:
+    pass
+
+try:
+    import palimpsest.tasks.features
+except ImportError:
+    pass
+

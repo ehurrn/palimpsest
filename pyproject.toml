@@ -9,7 +9,12 @@ dependencies = [
     "httpx",
     "beautifulsoup4",
     "pytest",
-    "tomli; python_version < '3.12'"
+    "tomli; python_version < '3.12'",
+    "spacy",
+    "opencv-python-headless",
+    "numpy",
+    "pymupdf",
+    "pillow"
 ]
 
 [tool.pytest.ini_options]

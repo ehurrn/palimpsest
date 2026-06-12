@@ -218,6 +218,18 @@ def complete(req: CompletePayload):
                 (now, len(req.result), doc_id)
             )
             
+            # Enqueue features job
+            try:
+                conn.execute(
+                    "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) VALUES ('features', ?, '{}', 'pending', 5, ?, ?)",
+                    (doc_id, now, now)
+                )
+            except sqlite3.IntegrityError:
+                conn.execute(
+                    "UPDATE jobs SET state='pending', updated_at=? WHERE type='features' AND doc_id=?",
+                    (now, doc_id)
+                )
+            
         elif job_type == "features":
             # Write features json file atomically
             feat_dir = cfg.storage_root / "features"
@@ -254,6 +266,18 @@ def complete(req: CompletePayload):
                 "UPDATE documents SET status='features_done', features_at=? WHERE doc_id=?",
                 (now, doc_id)
             )
+            
+            # Enqueue embed job
+            try:
+                conn.execute(
+                    "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) VALUES ('embed', ?, '{}', 'pending', 5, ?, ?)",
+                    (doc_id, now, now)
+                )
+            except sqlite3.IntegrityError:
+                conn.execute(
+                    "UPDATE jobs SET state='pending', updated_at=? WHERE type='embed' AND doc_id=?",
+                    (now, doc_id)
+                )
             
         elif job_type == "embed":
             # Delete old chunks
@@ -354,6 +378,15 @@ def get_file(doc_id: str):
     if not doc_id.isdigit():
         raise HTTPException(status_code=400, detail="Invalid document ID")
     path = cfg.storage_root / "raw" / f"{doc_id}.pdf"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(path)
+
+@app.get("/ocr/{doc_id}.json")
+def get_ocr(doc_id: str):
+    if not doc_id.isdigit():
+        raise HTTPException(status_code=400, detail="Invalid document ID")
+    path = cfg.storage_root / "ocr" / f"{doc_id}.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path)

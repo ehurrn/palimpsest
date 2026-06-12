@@ -291,3 +291,21 @@ def test_ocr_result_handling(client):
     doc = cur.fetchone()
     assert doc["status"] == "ocr_done"
     assert doc["page_count"] == 1
+    
+    # Check features job enqueued automatically (chaining)
+    cur = conn.execute("SELECT state FROM jobs WHERE type='features' AND doc_id='111'")
+    job = cur.fetchone()
+    assert job is not None
+    assert job["state"] == "pending"
+    
+    # Test GET /ocr/{doc_id}.json endpoint
+    resp = client.get("/ocr/111.json")
+    assert resp.status_code == 200
+    assert resp.json()[0]["text"] == "CONFIDENTIAL DOCUMENT"
+    
+    resp = client.get("/ocr/abc.json")
+    assert resp.status_code == 400
+    
+    resp = client.get("/ocr/999.json")
+    assert resp.status_code == 404
+

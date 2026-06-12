@@ -1,6 +1,13 @@
 # Work Log
 
 ## 2026-06-12
+- Completed Task 6: Feature Extraction: Redaction Marks + Entities.
+  - Implemented `palimpsest/tasks/features.py` with `@handler("features")`.
+  - Verified broker endpoints and chaining (`ocr` -> `features` -> `embed`) and `/ocr/{doc_id}.json` streaming.
+  - Implemented text-marker regex parsing, OpenCV black-box contour detection, and spaCy NER + custom regex entities.
+  - Implemented entity normalization per guidelines.
+  - Wrote and passed comprehensive unit tests in `tests/test_features.py` asserting correct feature extraction, coordinates, normalization, and overlap resolution.
+
 - Starting Task 5: OCR Task Handler.
   - Implementing `palimpsest/tasks/ocr.py` with `@handler("ocr")`, embedded-text path, Apple Vision + Tesseract fallback, coordinate flip, confidence filter, and sorting.
   - Writing `tests/test_ocr.py` with fixture PDFs and unit tests for all paths.
