@@ -1,6 +1,9 @@
 # Virtualenv
 venv/
 
+# Git worktrees
+.worktrees/
+
 # Local working / tmp directory
 working/
 

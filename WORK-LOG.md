@@ -1,6 +1,9 @@
 # Work Log
 
 ## 2026-06-12
+- Starting Task 5: OCR Task Handler.
+  - Implementing `palimpsest/tasks/ocr.py` with `@handler("ocr")`, embedded-text path, Apple Vision + Tesseract fallback, coordinate flip, confidence filter, and sorting.
+  - Writing `tests/test_ocr.py` with fixture PDFs and unit tests for all paths.
 - Completed Task 4: Worker Daemon.
   - Implemented the worker daemon in `palimpsest/worker.py` and registry in `palimpsest/tasks/__init__.py`.
   - Added support for local model warming requests to local Ollama API (classify, extract, and embed models).
