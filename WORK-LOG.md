@@ -1,7 +1,13 @@
 # Work Log
 
 ## 2026-06-12
-- Started Task 4: Worker Daemon.
+- Completed Task 4: Worker Daemon.
+  - Implemented the worker daemon in `palimpsest/worker.py` and registry in `palimpsest/tasks/__init__.py`.
+  - Added support for local model warming requests to local Ollama API (classify, extract, and embed models).
+  - Designed the lease-execute loop with background heartbeat thread and automatic cancellation if lease is lost.
+  - Handled SIGTERM/SIGINT gracefully (exiting cleanly after current job) and broker offline scenarios (backoff).
+  - Wrote launchd plist file in `deploy/com.palimpsest.worker.plist`.
+  - Wrote and passed comprehensive unit tests in `tests/test_worker.py`.
 - Completed Task 3: Harvester CLI.
   - Implemented `palimpsest/harvester.py` with `catalog`, `fetch`, and `status` subcommands.
   - Supported robust rate-limiting (RPS), exponential backoff on 429/503, and WAF protection.
