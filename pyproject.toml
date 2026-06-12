@@ -1,0 +1,17 @@
+[project]
+name = "palimpsest"
+version = "0.1.0"
+description = "Systematic redacted text recovery pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "beautifulsoup4",
+    "pytest",
+    "tomli; python_version < '3.12'"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
