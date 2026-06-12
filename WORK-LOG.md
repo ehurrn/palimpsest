@@ -1,6 +1,12 @@
 # Work Log
 
 ## 2026-06-12
+- Completed Task 7: Embeddings, Index, and the Redaction-Gap Join.
+  - Implemented `palimpsest/tasks/embed.py` with `@handler("embed")` for text chunking and sequential batch embedding via local Ollama.
+  - Implemented `palimpsest/indexer.py` with `build`, `gapjoin`, and `stats` CLI subcommands.
+  - Added SQLite schema update for `gapjoin_runs` table and schema version 2.
+  - Wrote and passed comprehensive unit tests in `tests/test_embed.py` and `tests/test_gapjoin.py` asserting correct chunking boundaries, deterministic gap join scoring, auto-flagging of person candidates to review queue, deduplication, and short-context skipping.
+
 - Completed Task 6: Feature Extraction: Redaction Marks + Entities.
   - Implemented `palimpsest/tasks/features.py` with `@handler("features")`.
   - Verified broker endpoints and chaining (`ocr` -> `features` -> `embed`) and `/ocr/{doc_id}.json` streaming.

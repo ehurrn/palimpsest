@@ -14,7 +14,8 @@ dependencies = [
     "opencv-python-headless",
     "numpy",
     "pymupdf",
-    "pillow"
+    "pillow",
+    "faiss-cpu"
 ]
 
 [tool.pytest.ini_options]

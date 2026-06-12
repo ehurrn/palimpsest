@@ -108,6 +108,13 @@ def migrate(cfg):
           version INTEGER PRIMARY KEY
         );""")
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (1);")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS gapjoin_runs (
+          redaction_id INTEGER PRIMARY KEY REFERENCES redactions(redaction_id),
+          run_at TEXT NOT NULL
+        );""")
+        conn.execute("UPDATE schema_version SET version = 2 WHERE version < 2;")
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "migrate":

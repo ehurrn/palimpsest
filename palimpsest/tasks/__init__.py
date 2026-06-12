@@ -26,3 +26,9 @@ try:
 except ImportError:
     pass
 
+try:
+    import palimpsest.tasks.embed
+except ImportError:
+    pass
+
+
