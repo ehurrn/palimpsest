@@ -1,0 +1,10 @@
+# Virtualenv
+venv/
+
+# Local working / tmp directory
+working/
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/

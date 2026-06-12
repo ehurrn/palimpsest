@@ -1,0 +1,1 @@
+- Email opennet@osti.gov requesting bulk-download terms for NV* accession research; mention rate limits we should honor.
