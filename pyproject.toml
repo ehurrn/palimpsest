@@ -13,10 +13,12 @@ dependencies = [
     "spacy",
     "opencv-python-headless",
     "numpy",
-    "pymupdf",
-    "pillow",
+    "pymupdf>=1.27.2.3",
+    "pillow>=12.2.0",
+    "pytesseract>=0.3.13",
+    "ocrmac>=1.0.1",
     "faiss-cpu",
-    "mcp"
+    "mcp",
 ]
 
 [tool.pytest.ini_options]
