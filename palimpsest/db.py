@@ -242,6 +242,51 @@ CREATE TABLE IF NOT EXISTS identity_link_candidates (
 );""")
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (6);")
 
+        # Schema v7 — Evaluation harness + trust gate (specs/EVAL-TRUST-GATE.md §5)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS eval_runs (
+          run_id          INTEGER PRIMARY KEY,
+          started_at      TEXT NOT NULL,
+          finished_at     TEXT,
+          scorer_git_sha  TEXT,
+          corpus_hash     TEXT,
+          seed            INTEGER,
+          config_snapshot TEXT,
+          notes           TEXT
+        );""")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS eval_cases (
+          case_id   INTEGER PRIMARY KEY,
+          run_id    INTEGER NOT NULL REFERENCES eval_runs(run_id),
+          type_key  TEXT NOT NULL,
+          case_kind TEXT NOT NULL,
+          spec      TEXT NOT NULL,
+          truth     TEXT NOT NULL
+        );""")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS eval_results (
+          result_id        INTEGER PRIMARY KEY,
+          run_id           INTEGER NOT NULL REFERENCES eval_runs(run_id),
+          case_id          INTEGER NOT NULL REFERENCES eval_cases(case_id),
+          type_key         TEXT NOT NULL,
+          raw_score        REAL,
+          score_components TEXT,
+          predicted        TEXT,
+          label            TEXT NOT NULL,
+          confidence       REAL
+        );""")
+        for _table in ("gap_candidates", "identity_link_candidates"):
+            for _col, _decl in (
+                ("confidence", "REAL"),
+                ("confidence_method", "TEXT"),
+                ("gate_tier", "TEXT"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} {_decl}")
+                except sqlite3.OperationalError:
+                    pass  # column already exists — migration is idempotent
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (7);")
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "migrate":

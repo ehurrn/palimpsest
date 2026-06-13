@@ -56,3 +56,13 @@ keep_alive = "24h"
 gonktop = ["ocr", "features", "embed", "gapjoin"]
 m4 = ["ocr", "features", "classify"]
 m5 = ["extract", "ocr", "features", "embed"]
+
+[eval]
+target_precision = 0.90      # Wilson lower-bound precision floor for surfaceable
+wilson_z         = 1.96
+min_cases        = 40        # per type; below this the gate is disabled
+default_seed     = 1337
+gate_enforcement = "enforce" # off | annotate | enforce
+artifact_path    = "{storage.root}/eval/calibration.json"
+eval_db_path     = "{storage.root}/eval/eval.db"
+

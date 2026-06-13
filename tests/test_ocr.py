@@ -42,6 +42,7 @@ def _make_config(engine_preference: list[str] | None = None, min_confidence: flo
         models={"classify": "q", "extract": "q", "keep_alive": "24h"},
         nodes={},
         orchestrator={},
+        eval={},
     )
 
 

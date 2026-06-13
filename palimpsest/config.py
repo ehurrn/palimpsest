@@ -22,6 +22,7 @@ class Config:
     models: dict
     nodes: dict
     orchestrator: dict
+    eval: dict
 
 def load(path: str | Path | None = None) -> Config:
     if not path:
@@ -41,6 +42,11 @@ def load(path: str | Path | None = None) -> Config:
     root_str = data["storage"]["root"]
     db_path_str = data["db"]["path"].replace("{storage.root}", root_str)
     
+    eval_cfg = dict(data.get("eval", {}))
+    for _k in ("artifact_path", "eval_db_path"):
+        if isinstance(eval_cfg.get(_k), str):
+            eval_cfg[_k] = eval_cfg[_k].replace("{storage.root}", root_str)
+            
     return Config(
         raw=data,
         storage_root=Path(root_str),
@@ -54,5 +60,6 @@ def load(path: str | Path | None = None) -> Config:
         gapjoin=data["gapjoin"],
         models=data["models"],
         nodes=data["nodes"],
-        orchestrator=data.get("orchestrator", {})
+        orchestrator=data.get("orchestrator", {}),
+        eval=eval_cfg
     )
