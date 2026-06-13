@@ -128,4 +128,7 @@
 
 ## 2026-06-13 (Plan finalized — Manager)
 - Added entry-point runbook specs/EVAL-PLAN.md (ordered TASK list, per-packet protocol, definition of done, pre-flight: clear stale .git/HEAD.lock + commit code-review baseline) and TASK-19 verification packet. Updated EVAL-TRUST-GATE build order.
-- Plan is handoff-ready for agy/gemini: TASK-11..19. Real calibration still blocked on Ollama (HUMAN_DO_THIS.md).
+- Starting task: TASK-11 — Eval schema (v7) + `[eval]` config
+- Completed task: TASK-11 — Eval schema (v7) + `[eval]` config
+- Starting task: TASK-12 — Eval DB isolation + deterministic embedding + synthetic index
+- Completed task: TASK-12 — Eval DB isolation + deterministic embedding + synthetic index
