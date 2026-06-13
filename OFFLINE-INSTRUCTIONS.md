@@ -1,78 +1,132 @@
-# Offline Development Handoff & Instructions
+# Offline Development Handoff
 
-This document directs offline coding models (running locally via Ollama) on how to resume and continue development on the Palimpsest project when session limits are reached.
-
-## 1. Local Model Mapping & Capabilities
-
-Map these specific locally-installed models to the following development roles:
-
-- **Lead Architect / Code Generator / Reasoning Agent**:
-  - `qwen3.6-heretic-27b:latest` (Best overall coding and structural reasoning)
-  - `gemma-4-12b-it-abliterated:latest` (Highly capable instruction-following and coding)
-  - `granite-4.1-8b-claude-opus-thinking:latest` (Best for step-by-step logic planning and debugging)
-- **Fast Coding / Unit Test Helper**:
-  - `lfm2-8b-qwen3.6-distill:latest` (Fast turnaround on code edits and test writing)
-  - `l3.2-rogue-dark-horror-7b:latest` (Lightweight syntax completions)
-- **Text Embeddings**:
-  - `nomic-embed-text:latest` (Target model for chunk indexing)
+This document is the briefing for local Ollama models continuing Palimpsest
+development when cloud session limits are reached. Models run on the **MacBook
+Pro (m4)**; the broker and production DB live on **gonktop** (192.168.0.58).
 
 ---
 
-## 2. Project Context & Current State
+## 1. Environment
 
-The goal of Palimpsest is systematic redacted text recovery from the DoE OSTI OpenNet database (NV* accession series).
+| Machine | Role | Ollama URL |
+|---------|------|------------|
+| MacBook Pro (m4) | Development, local worker | http://localhost:11434 |
+| gonktop (192.168.0.58) | Broker (8077), DB, primary worker | http://192.168.0.58:11434 |
 
-### Active Status:
-- Phase 1 completed successfully, proving cross-document de-redaction (Common Rule citations).
-- Phase 2 is currently active.
-- The primary production database resides on **gonktop** at `/home/herren/palimpsest-data/db/palimpsest.db`.
-- The identity safety gate has been reverted (pending reviews reinstated, bulk-approvals undone) to enforce Iron Rule #3 (no unmasking without individual HITL or heuristic verification).
+**Python runtime** — always use `uv run` (never `python` or `python3`):
+```bash
+uv run python -m palimpsest.db migrate
+uv run pytest -x -q
+uv run ruff check palimpsest/
+uv run ty check palimpsest/<file>.py
+```
 
-### Blocker Status:
-- **Local M4 Ollama**: Currently returning `500 Internal Server Error` on embeddings. The Ollama process is running in memory, but `Ollama.app` has been deleted from the filesystem, preventing the launch of `llama-server`.
-- **OCR Fallback**: Tesseract is installed and verified on `gonktop` but missing on the local machine.
+**Git sync**: `git pull origin main` / `git push origin main`
+Remote: `git@github.com:ehurrn/palimpsest.git`
+`config.toml` is gitignored — each host keeps its own (never overwrite).
 
 ---
 
-## 3. Active Handoff Files
+## 2. Local Models (MacBook)
 
-Before starting work, the offline agent must read:
-1. `WORK-LOG.md` — Current chronological progress.
-2. `TODO.md` — Next tasks.
+| Model | Role |
+|-------|------|
+| `qwen3.6-heretic-27b:latest` | Lead architect / code generation |
+| `gemma-4-12b-it-abliterated:latest` | Instruction-following, code review |
+| `granite-4.1-8b-claude-opus-thinking:latest` | Step-by-step planning, debugging |
+| `lfm2-8b-qwen3.6-distill:latest` | Fast edits, unit test writing |
+| `nomic-embed-text:latest` | Chunk embeddings (used by pipeline) |
+
+Check Ollama is live and models are warm before starting:
+```bash
+ollama ps                          # what's loaded in GPU memory
+ollama list                        # all installed models
+curl -s http://localhost:11434/api/tags | python3 -m json.tool
+```
+
+---
+
+## 3. Current State
+
+- **Phase 2 active.** Phase 1 proved cross-document de-redaction (Common Rule
+  §46/§219 violations). Phase 2 generalises to six finding-types.
+- **Identity gate is enforced.** All person entities default to
+  `potentially_living`. No name is surfaced without HITL approval or the
+  document-age heuristic (doc age > 75 years OR doc_year − birth_year > 100).
+- **Schema**: v3 in production — `regulation_citations` + `violation_candidates`
+  tables live. Run `uv run python -m palimpsest.db migrate` if starting fresh.
+- **Worker on gonktop** is running, draining features jobs (755 queued when
+  last checked). Worker command:
+  ```bash
+  ssh herren@192.168.0.58 'tail -20 /tmp/palimpsest-worker.log'
+  ```
+
+---
+
+## 4. Before Starting Work
+
+Read these in order:
+1. `WORK-LOG.md` — chronological log; write an entry when you start and finish.
+2. `TODO.md` — next prioritised tasks.
 3. `palimpsest-phase2-plan.md` — Phase 2 roadmap.
-4. `.agents/explorer_r1_r2/handoff.md` — Environment diagnostics and database metrics.
-5. `specs/FINDING-TYPES.md` — The newly drafted specification of the six finding-types.
+4. `specs/FINDING-TYPES.md` — six finding-type taxonomy (a–f) with detectors,
+   corroboration rules, and identity-gate requirements.
+
+**WORK-LOG protocol** — agy (Gemini CLI) also writes to this file. Always read
+it before claiming a task to avoid duplication.
 
 ---
 
-## 4. Safety Invariants to Enforce
+## 5. Safety Invariants (never violate)
 
-1. **Provenance Invariant**: No de-redaction is valid without explicit citation to a Document ID and page number for both the redacted source and the clear corroborating source.
-2. **Identity HITL Gate**: Do not output plaintext names of potentially living subjects. All person entities default to `potentially_living` and must be pseudonymized as `PERSON-XXXX` unless individually verified or meeting the document-age heuristic (doc age > 75 years, or doc year - birth year > 100 years).
-
----
-
-## 5. Completed Tasks
-
-- **Task 1: M4 Ollama Reinstallation & Setup**: Clean installation of `ollama-app` completed via Homebrew cask. Zombie memory processes killed.
-  - *Note*: Ensure the Ollama GUI app is launched, models are warmed up, and re-enable the `embed` capability for `m4` in `config.toml` once embedding requests succeed.
-- **Task 2: Heuristic Safety Gate & Regulatory-Violation Scorer (Type e)**:
-  - Birth-year/document-date safety heuristic implemented and added as `heuristic` subcommand to `review.py` (verified by `tests/test_review.py:test_heuristic_classification`).
-  - Regulatory-violation citation detector and database schema v3 migration completed (verified by `tests/test_violation.py:test_violation_join`).
-  - All 74 unit tests passing.
+1. **Provenance**: every de-redaction cites the source doc_id + page for both
+   the redacted passage and the corroborating passage.
+2. **Identity gate**: no plaintext person name in output unless
+   `living_status = 'deceased_historical'` AND `status = 'approved'` in
+   `review_queue`, OR the heuristic subcommand clears it.
+3. **No DB access off-gonktop**: workers never open the SQLite file directly;
+   all mutations go through the broker at 192.168.0.58:8077.
 
 ---
 
-## 6. Next Execution Tasks (Todo for Offline Models)
+## 6. Completed (do not redo)
 
-Direct the local Ollama model to resume with these tasks:
+- Task 1–10: full pipeline (harvester → OCR → features → embed → gapjoin → review CLI → MCP server → preflight).
+- Phase 2 safety revert: bulk-approval of 5 291 persons and 1 474 gaps undone; identity gate re-enforced.
+- Heuristic gate: birth-year/doc-date heuristic added as `review heuristic` subcommand.
+- **Type e** (regulatory-violation): `reg_cite` entity kind, 7 regex patterns,
+  `normalize_reg_cite()`, `run_violation_join()` + `violationjoin` CLI in
+  `indexer.py`, schema v3 migration, 5 tests. 74 tests total, all green.
 
-### Task 1: Implement Document-Series Suppression Detector (Type f)
-1. **Define Regex Patterns**: Add sequence-number regex patterns in `palimpsest/tasks/features.py` as entity kind `seq_ref` to match accession number or sequence patterns (e.g., `NV\d{7}`, `NV-\d+`, `Report No. \d+`).
-2. **Implement Gap Analyzer**: In `palimpsest/indexer.py` (or a new module/subcommand), write an analyzer that scans the cataloged sequences for missing numbers (gaps > 20%), verifies if flanking documents reference the missing number, and inserts them as Type-f gap candidates.
-3. **Write Unit Tests**: Add tests in `tests/test_series.py` verifying gap detection, flanking references, and candidate scoring. Ensure all tests run and pass.
+---
 
-### Task 2: Implement Undisclosed Radiation Dosage (Type b)
-1. **Identify Subject References**: Add subject-reference pattern regexes (e.g., `Subject [A-Z\d]+` or `Patient [A-Z\d]+`) in `features.py` as entity kind `subject_ref`.
-2. **Implement Proximity Dosage Scorer**: In the gapjoin scorer, write logic to match dosage values with subjects in other documents based on close-proximity event details.
-3. **Write Unit Tests**: Add tests in `tests/test_dosage.py` and run the suite.
+## 7. Next Tasks (priority order)
+
+### Type f — Document-Series Suppression
+
+1. Add `seq_ref` entity kind in `palimpsest/tasks/features.py`:
+   - Patterns: `\bNV[-\s]?\d{7}\b`, `\bReport\s+No\.?\s*\d+\b`
+2. Add `run_series_gap()` in `palimpsest/indexer.py` + `seriesgap` subcommand:
+   - Query catalog for known accession ranges; flag gaps > 20%.
+   - Require ≥1 flanking document (N−1 or N+1) to reference the missing number.
+3. Tests in `tests/test_series.py`. Run full suite — all must pass.
+4. `uv run ruff check` + `uv run ty check` on edited files — zero errors.
+
+### Type b — Undisclosed Radiation Dosage
+
+1. Add `subject_ref` entity kind in `features.py`:
+   - Pattern: `\b(?:Subject|Patient|Case|Individual)\s+[A-Z0-9]+\b`
+2. Add proximity dosage scorer: co-occurrence of `dosage` + `subject_ref` on
+   same page within `redaction_context_chars` of a `black_box` or
+   `deleted_text` redaction → type-b candidate.
+3. Tests in `tests/test_dosage.py`.
+
+### After each task
+
+```bash
+uv run pytest -x -q          # all tests green
+git add -p                   # stage relevant changes only
+git commit                   # follow existing commit style
+git push origin main
+# update WORK-LOG.md
+```
