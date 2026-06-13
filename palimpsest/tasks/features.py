@@ -23,6 +23,19 @@ PERSON_STOPLIST = frozenset({
     "act", "code", "rule", "law", "regulation", "policy", "procedure",
 })
 
+# Tokens that indicate the entity is an org, not a person
+_ORG_INDICATOR_TOKENS = frozenset({
+    "hospital", "university", "college", "board", "bureau", "register",
+    "branch", "office", "center", "institute", "committee", "laboratory",
+    "school", "agency", "foundation", "department", "division", "council",
+    "association", "society", "corporation", "company", "inc", "corp",
+})
+
+_MONTH_RE = re.compile(
+    r'\b(january|february|march|april|may|june|july|august|september|'
+    r'october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b',
+    re.IGNORECASE,
+)
 _DIGIT_BRACKET_RE = re.compile(r'[\d\(\)\[\]@]')
 
 def _is_valid_person(text: str) -> bool:
@@ -36,14 +49,28 @@ def _is_valid_person(text: str) -> bool:
     # Reject OCR garbage with too much punctuation / whitespace
     if alpha_chars / max(len(stripped), 1) < 0.6:
         return False
+    # Reject if it looks like a date (contains a month name)
+    if _MONTH_RE.search(stripped):
+        return False
+    tokens = stripped.split()
+    # Reject isolated-single-char artifacts ("U l T", "p o l")
+    if len(tokens) > 1 and sum(1 for t in tokens if len(t) == 1) / len(tokens) > 0.5:
+        return False
+    # Reject all-caps short abbreviations (CFR, IRB) — real shouted names are
+    # longer and usually contain lowercase letters after the first character
+    if len(tokens) == 1 and stripped.isupper() and len(stripped) <= 5:
+        return False
     norm = " ".join(stripped.lower().split())
     if norm in PERSON_STOPLIST:
         return False
     for term in PERSON_STOPLIST:
         if norm.startswith(term):
             return False
+    # Reject if any token is an org-indicator word
+    token_set = {t.lower().rstrip("s") for t in tokens}  # crude deplural
+    if token_set & _ORG_INDICATOR_TOKENS:
+        return False
     # Single all-lowercase short token is not a name
-    tokens = stripped.split()
     if len(tokens) == 1 and stripped.islower() and len(stripped) < 8:
         return False
     return True
