@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -407,6 +408,101 @@ def handle_audit(cfg: Config):
     except Exception as e:
         print(f"Failed to read audit log: {e}")
 
+def apply_heuristic(cfg: Config):
+    """Apply birth-year and document-date safety heuristic to classify pending reviews."""
+    conn = connect(cfg)
+    current_year = datetime.datetime.now().year
+    
+    # Fetch pending review queue items
+    cur = conn.execute("""
+        SELECT rq.review_id, rq.entity_id, e.doc_id, e.page_no, e.text, e.norm, d.year AS doc_year
+        FROM review_queue rq
+        JOIN entities e ON rq.entity_id = e.entity_id
+        LEFT JOIN documents d ON e.doc_id = d.doc_id
+        WHERE rq.status = 'pending'
+    """)
+    items = cur.fetchall()
+    if not items:
+        print("No pending items in review queue to classify.")
+        conn.close()
+        return
+        
+    print(f"Running safety heuristic on {len(items)} pending review items...")
+    
+    approved_count = 0
+    denied_count = 0
+    
+    birth_patterns = [
+        re.compile(r'\b(?:born|b\.|birth(?:\s+date)?)\s*[:\-\s]?\s*(\d{4})\b', re.IGNORECASE),
+        re.compile(r'\(\s*(?:b\.\s*)?(\d{4})\s*-\s*(?:\d{4}|present)?\s*\)', re.IGNORECASE)
+    ]
+    
+    for item in items:
+        review_id = item["review_id"]
+        entity_id = item["entity_id"]
+        doc_id = item["doc_id"]
+        page_no = item["page_no"]
+        text = item["text"]
+        norm = item["norm"]
+        doc_year = item["doc_year"]
+        
+        # Try to find birth year from the page text
+        birth_year = None
+        cur_page = conn.execute("SELECT text FROM pages WHERE doc_id = ? AND page_no = ?", (doc_id, page_no))
+        page_row = cur_page.fetchone()
+        if page_row and page_row["text"]:
+            page_text = page_row["text"]
+            for pat in birth_patterns:
+                m = pat.search(page_text)
+                if m:
+                    birth_year = int(m.group(1))
+                    break
+                    
+        # Apply heuristic
+        is_deceased = False
+        reason = ""
+        
+        if doc_year is not None:
+            doc_age = current_year - doc_year
+            if doc_age > 75:
+                is_deceased = True
+                reason = f"Document year {doc_year} is > 75 years old ({doc_age} years)"
+            elif birth_year is not None:
+                age_at_doc = doc_year - birth_year
+                if age_at_doc > 100:
+                    is_deceased = True
+                    reason = f"Subject age at document date ({doc_year} - birth year {birth_year}) is {age_at_doc} > 100"
+                    
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        if is_deceased:
+            with conn:
+                conn.execute(
+                    "UPDATE entities SET living_status = 'deceased_historical' WHERE norm = ? AND kind = 'person'",
+                    (norm,)
+                )
+                conn.execute("""
+                    UPDATE review_queue 
+                    SET status = 'approved', decided_by = 'HEURISTIC', decided_at = ?
+                    WHERE entity_id IN (SELECT entity_id FROM entities WHERE norm = ?) AND status = 'pending'
+                """, (now, norm))
+                conn.execute(
+                    "UPDATE review_queue SET status = 'approved', decided_by = 'HEURISTIC', decided_at = ? WHERE review_id = ?",
+                    (now, review_id)
+                )
+            log_decision_to_audit(cfg, review_id, norm, "approved", "HEURISTIC", now)
+            print(f"[APPROVE] {text} ({norm}) - {reason}")
+            approved_count += 1
+        else:
+            with conn:
+                conn.execute(
+                    "UPDATE entities SET living_status = 'potentially_living' WHERE norm = ? AND kind = 'person' AND living_status = 'unknown'",
+                    (norm,)
+                )
+            denied_count += 1
+            
+    print(f"Heuristic classification completed: approved {approved_count} as deceased_historical, updated {denied_count} to potentially_living.")
+    conn.close()
+
 def main():
     parser = argparse.ArgumentParser(description="Palimpsest Human-in-the-Loop Review CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -421,6 +517,9 @@ def main():
     # audit sub-command
     subparsers.add_parser("audit", help="Show decision logs")
     
+    # heuristic sub-command
+    subparsers.add_parser("heuristic", help="Apply birth-year/document-date safety heuristic to pending reviews")
+    
     args = parser.parse_args()
     
     cfg = load()
@@ -431,6 +530,8 @@ def main():
         handle_gaps(cfg)
     elif args.command == "audit":
         handle_audit(cfg)
+    elif args.command == "heuristic":
+        apply_heuristic(cfg)
 
 if __name__ == "__main__":
     main()

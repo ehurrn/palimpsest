@@ -13,7 +13,8 @@ from palimpsest.review import (
     handle_gaps,
     handle_audit,
     get_clear_context,
-    log_decision_to_audit
+    log_decision_to_audit,
+    apply_heuristic
 )
 
 @pytest.fixture
@@ -291,3 +292,69 @@ def test_audit_logs_empty(temp_cfg, capsys):
     handle_audit(temp_cfg)
     captured = capsys.readouterr()
     assert "No audit records found." in captured.out
+
+def test_heuristic_classification(temp_cfg):
+    # Setup test data
+    conn = sqlite3.connect(temp_cfg.db_path)
+    
+    with conn:
+        # 1. Document older than 75 years (2026 - 76 = 1950)
+        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_old', 1950)")
+        # 2. Document newer but subject birth year makes them > 100 years old at doc date
+        # doc_year = 1980, birth_year = 1870 -> 1980 - 1870 = 110 > 100
+        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_born', 1980)")
+        # 3. Document newer and subject doesn't match heuristic
+        # doc_year = 2010, birth_year = 1950 -> 2010 - 1950 = 60 <= 100
+        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_young', 2010)")
+        
+        # Pages (with text containing birth year for doc_born and doc_young)
+        conn.execute("INSERT INTO pages (doc_id, page_no, text) VALUES ('doc_old', 1, 'John Smith lived here.')")
+        conn.execute("INSERT INTO pages (doc_id, page_no, text) VALUES ('doc_born', 1, 'Jane Doe (b. 1870) lived here.')")
+        conn.execute("INSERT INTO pages (doc_id, page_no, text) VALUES ('doc_young', 1, 'Bob Johnson (born in 1950) lived here.')")
+        
+        # Entities
+        conn.execute("""
+            INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm, char_start, char_end, living_status)
+            VALUES (10, 'doc_old', 1, 'person', 'John Smith', 'john smith', 0, 10, 'unknown')
+        """)
+        conn.execute("""
+            INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm, char_start, char_end, living_status)
+            VALUES (20, 'doc_born', 1, 'person', 'Jane Doe', 'jane doe', 0, 8, 'unknown')
+        """)
+        conn.execute("""
+            INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm, char_start, char_end, living_status)
+            VALUES (30, 'doc_young', 1, 'person', 'Bob Johnson', 'bob johnson', 0, 11, 'unknown')
+        """)
+        
+        # Review queue
+        conn.execute("INSERT INTO review_queue (review_id, entity_id, status) VALUES (1, 10, 'pending')")
+        conn.execute("INSERT INTO review_queue (review_id, entity_id, status) VALUES (2, 20, 'pending')")
+        conn.execute("INSERT INTO review_queue (review_id, entity_id, status) VALUES (3, 30, 'pending')")
+    conn.close()
+    
+    # Run the heuristic command
+    apply_heuristic(temp_cfg)
+    
+    # Verify results
+    conn = sqlite3.connect(temp_cfg.db_path)
+    conn.row_factory = sqlite3.Row
+    
+    # John Smith (doc 1950 is older than 75 years) -> approved
+    rq1 = conn.execute("SELECT status FROM review_queue WHERE review_id = 1").fetchone()
+    assert rq1["status"] == "approved"
+    ent1 = conn.execute("SELECT living_status FROM entities WHERE entity_id = 10").fetchone()
+    assert ent1["living_status"] == "deceased_historical"
+    
+    # Jane Doe (age at doc is 1980 - 1870 = 110 > 100) -> approved
+    rq2 = conn.execute("SELECT status FROM review_queue WHERE review_id = 2").fetchone()
+    assert rq2["status"] == "approved"
+    ent2 = conn.execute("SELECT living_status FROM entities WHERE entity_id = 20").fetchone()
+    assert ent2["living_status"] == "deceased_historical"
+    
+    # Bob Johnson (age at doc is 2010 - 1950 = 60 <= 100, doc year not > 75 years old) -> remains pending, living_status = potentially_living
+    rq3 = conn.execute("SELECT status FROM review_queue WHERE review_id = 3").fetchone()
+    assert rq3["status"] == "pending"
+    ent3 = conn.execute("SELECT living_status FROM entities WHERE entity_id = 30").fetchone()
+    assert ent3["living_status"] == "potentially_living"
+    
+    conn.close()

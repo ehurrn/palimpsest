@@ -1,10 +1,11 @@
 # Work Log
 
 ## 2026-06-12
+- Launched `teamwork_preview` subagent team (`9376f268-0ad1-4280-9b16-b43c85a57e12`) to implement Phase 2 Type f (series suppression) and Type b (undisclosed dosage) finding-types.
+- Phase 2 begun. Reverted AGY_BULK bulk approvals: 5,291 review_queue rows → pending, 1,320 gap_candidates → candidate. Identity gate restored (all entities remain living_status=unknown). Wrote `specs/FINDING-TYPES.md` with six finding-types (a-f), detectors, corroboration rules, and build order (e → f → b → d → c).
+- Completed Heuristic Gate & Heuristic sub-command: implemented birth-year/document-date safety heuristic, added `heuristic` sub-command to `review.py`, and verified with unit test (`test_heuristic_classification`).
+- Completed Type e (regulatory-violation citation): implemented `reg_cite` entity kind, regulation table schema v3 migration, `violationjoin` command in `indexer.py` (date comparison + corroborating count), and verified with unit test (`test_violation_join`).
 - Created OFFLINE-INSTRUCTIONS.md to guide local Ollama models (specifically Qwen 27B, Gemma 12B, and Granite 8B) on Phase 2 next steps and safety invariants.
-- Completed Type e (regulatory-violation citation): reg_cite entity extraction in features.py (7 patterns, span-dedup, normalize_reg_cite), run_violation_join() + violationjoin CLI in indexer.py (temporal scoring, corroboration bonus), stats updated. 72 tests green.
-- Starting Type e (regulatory-violation citation): reg_cite entity kind, regulation_citations table (schema v3), violation scorer.
-- Phase 2 begun. Reverted AGY_BULK bulk approvals: 5,291 review_queue rows → pending, 1,320 gap_candidates → candidate. Identity gate restored (all entities remain living_status=unknown). Wrote `specs/FINDING-TYPES.md` with six finding-types (a-f), detectors, corroboration rules, and build order (e → f → b → d → c). 6k-doc fetch running; M4 + gonktop workers processing in parallel.
 - Reviewed Phase-1 state (verification report = SCALE) and wrote `palimpsest-phase2-plan.md`: carry-over blockers, six-finding-type generalization, Lane A orchestrator, harvester scaling, re-asserted gates. FLAGGED: bulk approval of all 5,258 persons + bulk verification of 1,474 gaps violates Architecture Iron Rule #3 (identity HITL gate) — Phase 2 must reinstate per-entity review before any output ships.
 - Launched Phase 2 teamwork_preview subagent team to execute safety gate revert, M4 Ollama repair, and finding-types specification.
 - Created TODO.md outlining infrastructure fixes and Phase 2 scaling milestones for coordination.
@@ -95,5 +96,5 @@
 - Sentinel started Phase 2 execution, spawning the Project Orchestrator to address identity safety gates, M4 worker repairs, OCR coverage verification, and specs/FINDING-TYPES.md.
 - Database and Infrastructure Explorer started investigation of database and local environment status.
 - Database and Infrastructure Explorer completed investigation of database and local environment status. Detailed report written to .agents/explorer_r1_r2/handoff.md.
-
-
+- Sentinel started Phase 2 execution to implement finding-types: Type f (series suppression) and Type b (undisclosed dosage).
+- Phase 2 Type f and Type b implementation has started (worker subagent worker_series_dosage_init).
