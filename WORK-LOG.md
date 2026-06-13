@@ -1,6 +1,8 @@
 # Work Log
 
 ## 2026-06-13
+- Starting task: Addressing code review on orchestrator.py (NameError), scorers/base.py + concrete scorers (Scorer protocol + missing candidates_table/top), indexer.py (undefined print_stats), harvester.py (hardcoded HUMAN_DO_THIS path), server.py (N+1 review_queue lookups in masking).
+- Completed code review fixes: (1) orchestrator `_check_candidate_counts` now takes `config: Config`; also fixed adjacent bug where SCORERS classes were used without instantiation (`SCORERS[k]()`), which broke `investigate`'s `scorer.top()`. (2) Added `candidates_table: str` + `top()` to Scorer protocol; added missing `candidates_table` to type_c/d/f and missing `top()` to type_c; typed registry as `dict[str, type[Scorer]]`. (3) Implemented `print_stats()` in indexer.py (pipeline/index/gapjoin/per-scorer metrics). (4) harvester writes HUMAN_DO_THIS.md to repo root via `Path(__file__).resolve().parent.parent` (not the hardcoded absolute path). (5) server.py masking now loads approved entity_ids once per tool call (`load_approved_person_ids`) and threads the set through all mask helpers + all 4 tools, eliminating the N+1. 150 tests green; ruff/ty clean on new code; `index stats` and `orchestrate investigate` smoke-tested.
 - Completed task: Created AGENTS.md instructing Jules to work persistently, log blockers to HUMAN_DO_THIS.md, and continue unbothered.
 - Phase 3 COMPLETE. indexer.py thinned (1071 → 584 lines): run_violation/series/outcome/identity_link replaced with scorer delegates. pyproject.toml [project.scripts] entry points added for all 4 CLI tools. 150 tests green. Committed 367c830.
 - Phase 3 scorer registry complete (solo — agy). Created palimpsest/scorers/ package: base.py (Candidate, Scorer), __init__.py (SCORERS registry), type_c/d/e/f.py extracted from indexer.py. Added type_key + top() to all scorers. Added Config.orchestrator field. Fixed test_ocr.py fixture. Committed orchestrator.py from prior agent. 150 tests green. Pushed to main.
@@ -114,3 +116,12 @@
 - worker_implementation subagent (teamwork_preview_worker) completed Phase 2 core implementation: migrated database schema to v4 with series_gap_candidates table, added seq_ref/subject_ref regex extraction, implemented seriesjoin CLI command, updated gapjoin with dosage proximity/deduplication, and added/passed unit tests tests/test_series.py and tests/test_dosage.py.
 
 [HUMAN ADDED NOTE: WE HAD A FAILED ATTEMPT TO USE gemini-cli to work on the project, I advise it to revert its changes but I'm unsure if it did. Please review the code base and delete this entry.]
+
+## 2026-06-13 (Brainstorm session — Manager)
+- Started a post-Phase-2 feedback/brainstorming session with the user to scope next-phase opportunities (no code changes; planning only). Will converge on one direction and write a design spec before any implementation.
+
+## 2026-06-13 (Plan written — Manager)
+- Completed Phase-4 design + implementation plan: Evaluation & Trust Gate (precision-first, synthetic ground truth, scope a/b/c; type e deferred).
+- Wrote specs/EVAL-TRUST-GATE.md (source-of-truth design) + 8 executable packets specs/TASK-11..18 (schema v7; isolation+lexical-embedding; a/b generator+oracle; c generator; runner+CLI; PAV/Wilson calibration; metrics+report w/ mandatory validity disclosure; trust gate + server enforcement = Iron Rule #4).
+- No production code changed. Packets are TDD, self-contained, house-style. Self-review fixed two cross-case-contamination bugs in the synthetic generators + one lint defect.
+- BLOCKER for REAL calibration numbers: Ollama embed down on M4 (see HUMAN_DO_THIS.md). Plan is fully executable now with the lexical stub (plumbing-only numbers).
