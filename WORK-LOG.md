@@ -1,5 +1,8 @@
 # Work Log
 
+## 2026-06-13
+- Completed Type d (outcome suppression gap): merged feature/type-d to main. Fixed pre-existing test_gapjoin_algorithm score expectation (0.899 proximity bonus). Resolved merge conflict between outcome_ref (Type d) and seq_ref/subject_ref (agy Type f/b uncommitted work). Committed agy's Phase 2 changes. Full suite: 91 tests passing. Pushed to origin/main. Next: Type c (identity linkage).
+
 ## 2026-06-12
 - Starting Type d (outcome suppression gap): outcome_ref entity, absence scorer, outcomegap CLI. (subagent feature-type-d worker started implementation in worktree feature/type-d)
 - Completed Type d (outcome suppression gap): outcome_ref entity kind (outcome_ind:/future_ref: normalization), schema v5 outcome_gap_candidates table, run_outcome_gap() scorer in indexer.py, outcomegap CLI subcommand, preflight EXPECTED_VERSION bumped to 5. 11 new tests in tests/test_outcome.py; full suite 84 passing (1 pre-existing failure in test_gapjoin.py unrelated to Type d). Committed to branch feature/type-d.
