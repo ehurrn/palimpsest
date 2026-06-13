@@ -1,7 +1,9 @@
 # tests/test_outcome.py
 import sqlite3
 import pytest
+from typing import cast
 
+from palimpsest.config import Config
 from palimpsest.db import migrate
 from palimpsest.tasks.features import normalize, normalize_outcome_ref
 from palimpsest.indexer import run_outcome_gap
@@ -51,7 +53,7 @@ def outcome_db(tmp_path):
         db_path = tmp_path / "db" / "palimpsest.db"
         gapjoin = {"score_threshold": 0.65}
 
-    cfg = DummyCfg()
+    cfg = cast(Config, DummyCfg())
     migrate(cfg)
 
     conn = sqlite3.connect(cfg.db_path)
@@ -121,7 +123,7 @@ def test_outcome_gap_future_ref_bonus(tmp_path):
         db_path = tmp_path / "db" / "palimpsest.db"
         gapjoin = {"score_threshold": 0.65}
 
-    cfg = DummyCfg()
+    cfg = cast(Config, DummyCfg())
     migrate(cfg)
 
     conn = sqlite3.connect(cfg.db_path)

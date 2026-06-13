@@ -702,6 +702,13 @@ def run_series_join(cfg: Config):
 def run_outcome_gap(cfg: Config) -> None:
     """Type-d detector: protocol_code in initiation doc with no outcome doc.
 
+    An initiation doc is one that contains a protocol_code entity AND a date
+    entity on the same page. An outcome doc is one that contains an outcome_ref
+    entity whose norm starts with 'outcome_ind:' (i.e. outcome-indicator terms
+    like "mortality", "follow-up results"). Documents containing only 'future_ref:'
+    outcome_ref entities (e.g. "to be submitted") do NOT satisfy the outcome-present
+    condition — they are corroboration signals in initiation docs, not outcome docs.
+
     Scoring:
     - 0.70 base: initiation doc exists, no outcome doc found.
     - +0.15 bonus: initiation doc has a future_ref outcome_ref entity.
@@ -712,13 +719,13 @@ def run_outcome_gap(cfg: Config) -> None:
     threshold = float(cfg.gapjoin.get("score_threshold", 0.65))
     current_year = int(datetime.datetime.now().year)
 
-    # Get all distinct protocol_code norms and their entity info
+    # One row per (pc_norm, doc_id) pair — deduplicated at SQL level
     rows = conn.execute("""
-        SELECT DISTINCT e.norm AS pc_norm, e.doc_id, e.page_no, e.entity_id,
-                        d.year AS doc_year
+        SELECT e.norm AS pc_norm, e.doc_id, d.year AS doc_year
         FROM entities e
         JOIN documents d ON e.doc_id = d.doc_id
         WHERE e.kind = 'protocol_code'
+        GROUP BY e.norm, e.doc_id
     """).fetchall()
 
     if not rows:
@@ -730,25 +737,23 @@ def run_outcome_gap(cfg: Config) -> None:
     for row in rows:
         pc_docs[str(row["pc_norm"])].append({
             "doc_id": str(row["doc_id"]),
-            "page_no": int(row["page_no"]),
-            "entity_id": int(row["entity_id"]),
             "doc_year": row["doc_year"],
         })
 
     inserted = 0
     for pc_norm, doc_entries in pc_docs.items():
-        # Docs that contain this protocol_code AND have a start-date (any date entity on the same page)
+        # Docs that contain this protocol_code AND have a date entity (initiation signal)
         initiation_entries = []
         for entry in doc_entries:
             date_check = conn.execute(
-                "SELECT 1 FROM entities WHERE doc_id = ? AND page_no = ? AND kind = 'date' LIMIT 1",
-                (entry["doc_id"], entry["page_no"])
+                "SELECT 1 FROM entities WHERE doc_id = ? AND kind = 'date' LIMIT 1",
+                (entry["doc_id"],)
             ).fetchone()
             if date_check:
                 initiation_entries.append(entry)
 
         if not initiation_entries:
-            continue  # no initiation doc for this protocol_code
+            continue
 
         # Check if ANY doc with this protocol_code has an outcome_ref with "outcome_ind:" prefix
         outcome_docs = conn.execute("""
@@ -763,14 +768,12 @@ def run_outcome_gap(cfg: Config) -> None:
 
         has_outcome_doc = outcome_docs is not None and outcome_docs[0] > 0
         if has_outcome_doc:
-            continue  # outcome doc exists — not a gap
+            continue
 
-        # Score and insert each initiation doc as a candidate
         for entry in initiation_entries:
             doc_id = entry["doc_id"]
             start_year = entry["doc_year"]
 
-            # Check for future_ref entity in this initiation doc
             future_ref_row = conn.execute("""
                 SELECT entity_id FROM entities
                 WHERE doc_id = ? AND kind = 'outcome_ref' AND norm LIKE 'future_ref:%'
@@ -792,7 +795,8 @@ def run_outcome_gap(cfg: Config) -> None:
                           (protocol_code, initiation_doc_id, start_year, future_ref_entity_id, score)
                         VALUES (?, ?, ?, ?, ?)
                     """, (pc_norm, doc_id, start_year, future_ref_entity_id, score))
-                    inserted += 1
+                    if conn.execute("SELECT changes()").fetchone()[0]:
+                        inserted += 1
 
     logger.info(f"Outcome gap join complete: {inserted} candidates inserted.")
 

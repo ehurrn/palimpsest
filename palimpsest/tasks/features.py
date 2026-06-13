@@ -265,7 +265,7 @@ def normalize_outcome_ref(text: str) -> str:
         Normalized string with 'future_ref:' or 'outcome_ind:' prefix.
     """
     t = " ".join(text.split()).strip().lower()
-    future_signals = ["to be submitted", "annual report", "follow-up study planned",
+    future_signals = ["to be submitted", "annual report due", "follow-up study planned",
                       "final report to follow", "final report forthcoming", "pending final report",
                       "pending report"]
     if any(sig in t for sig in future_signals):
