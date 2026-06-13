@@ -1,6 +1,11 @@
 # Work Log
 
 ## 2026-06-12
+- Completed Task 10: Phase-1 Verification Run scaffolding.
+  - Wrote `palimpsest/preflight.py` with 8 checks: config loads, storage mounted+writable+≥200GB, DB migrated at schema_version 2, broker reachable, worker heartbeat, Ollama embed model warm latency <3s, spaCy en_core_web_sm, FAISS index.
+  - Wrote `reports/phase1-verification.md` template with all 5 required sections (preflight output, pilot run, full slice, gap candidate review, kill-or-scale recommendation).
+  - Fixed pre-existing OCR test: `test_blank_page_produces_valid_empty_page` now mocks `_ocr_page` so it doesn't require ocrmac/pytesseract in dev.
+  - All 67 tests passing.
 - Starting Task 10: Phase-1 Verification Run. Writing preflight.py.
 - Completed Task 9: HITL Review CLI + Investigator Skill.
   - Implemented `palimpsest/review.py` with `people`, `people --list`, `gaps`, and `audit` subcommands.
