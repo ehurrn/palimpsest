@@ -272,6 +272,15 @@ def normalize_outcome_ref(text: str) -> str:
         return "future_ref:" + t
     return "outcome_ind:" + t
 
+def normalize_seq_ref(text: str) -> str:
+    t = " ".join(text.split()).strip().upper()
+    t = re.sub(r'^REPORT\s+(?:NO\.?|NUMBER)\s*(\d+)', r'REPORT-NO-\1', t)
+    t = re.sub(r'^NV\s*-\s*(\d+)', r'NV-\1', t)
+    t = re.sub(r'^NV\s*(\d+)', r'NV\1', t)
+    return t
+
+def normalize_subject_ref(text: str) -> str:
+    return " ".join(text.split()).strip().lower()
 
 def normalize(kind: str, text: str) -> str:
     """Normalize entities according to the rules in §7.3."""
@@ -289,6 +298,10 @@ def normalize(kind: str, text: str) -> str:
         return normalize_reg_cite(text)
     elif kind == "outcome_ref":
         return normalize_outcome_ref(text)
+    elif kind == "seq_ref":
+        return normalize_seq_ref(text)
+    elif kind == "subject_ref":
+        return normalize_subject_ref(text)
     else:
         return " ".join(text.split()).strip().lower()
 
@@ -333,6 +346,8 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
         r'final\s+report\s+(?:to\s+follow|forthcoming)|pending\s+(?:final\s+)?report)\b',
         re.IGNORECASE
     )
+    seq_ref_pattern = re.compile(r'\b(NV\d{7}|NV-\d+|Report\s+No\.\s+\d+)\b', re.IGNORECASE)
+    subject_ref_pattern = re.compile(r'\b(Subject|Patient|Case|Individual)\s+[A-Z\d]+\b', re.IGNORECASE)
     
     for page_idx, page in enumerate(ocr_data):
         page_no = page["page_no"]
@@ -600,6 +615,48 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                     "char_end": char_end,
                     "x0": None, "y0": None, "x1": None, "y1": None,
                 })
+
+        # seq_ref extraction
+        for m in seq_ref_pattern.finditer(page_text):
+            char_start = m.start()
+            char_end = m.end()
+            text = m.group(0)
+            norm = normalize("seq_ref", text)
+            bbox = [0.0, 0.0, 1.0, 1.0]
+            for start, end, b in line_offsets:
+                if start <= char_start <= end:
+                    bbox = b
+                    break
+            regex_entities.append({
+                "page_no": page_no,
+                "kind": "seq_ref",
+                "text": text,
+                "norm": norm,
+                "char_start": char_start,
+                "char_end": char_end,
+                "bbox": bbox,
+            })
+
+        # subject_ref extraction
+        for m in subject_ref_pattern.finditer(page_text):
+            char_start = m.start()
+            char_end = m.end()
+            text = m.group(0)
+            norm = normalize("subject_ref", text)
+            bbox = [0.0, 0.0, 1.0, 1.0]
+            for start, end, b in line_offsets:
+                if start <= char_start <= end:
+                    bbox = b
+                    break
+            regex_entities.append({
+                "page_no": page_no,
+                "kind": "subject_ref",
+                "text": text,
+                "norm": norm,
+                "char_start": char_start,
+                "char_end": char_end,
+                "bbox": bbox,
+            })
 
         # Add regex entities to final page entities list
         page_entities = list(regex_entities)

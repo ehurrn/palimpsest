@@ -5,7 +5,6 @@ import sys
 import time
 import re
 import datetime
-from pathlib import Path
 import httpx
 from bs4 import BeautifulSoup
 

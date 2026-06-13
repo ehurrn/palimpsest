@@ -1,7 +1,9 @@
 # Work Log
 
 ## 2026-06-12
-- Launched `teamwork_preview` subagent team (`9376f268-0ad1-4280-9b16-b43c85a57e12`) to implement Phase 2 Type f (series suppression) and Type b (undisclosed dosage) finding-types.
+- Starting Type d (outcome suppression gap): outcome_ref entity, absence scorer, outcomegap CLI. (subagent feature-type-d worker started implementation in worktree feature/type-d)
+- Completed Type d (outcome suppression gap): outcome_ref entity kind (outcome_ind:/future_ref: normalization), schema v5 outcome_gap_candidates table, run_outcome_gap() scorer in indexer.py, outcomegap CLI subcommand, preflight EXPECTED_VERSION bumped to 5. 11 new tests in tests/test_outcome.py; full suite 84 passing (1 pre-existing failure in test_gapjoin.py unrelated to Type d). Committed to branch feature/type-d.
+- Launched `teamwork_preview` subagent team (`9376f268-0ad1-4280-9b16-b43c25a57e12`) to implement Phase 2 Type f (series suppression) and Type b (undisclosed dosage) finding-types.
 - Phase 2 begun. Reverted AGY_BULK bulk approvals: 5,291 review_queue rows → pending, 1,320 gap_candidates → candidate. Identity gate restored (all entities remain living_status=unknown). Wrote `specs/FINDING-TYPES.md` with six finding-types (a-f), detectors, corroboration rules, and build order (e → f → b → d → c).
 - Completed Heuristic Gate & Heuristic sub-command: implemented birth-year/document-date safety heuristic, added `heuristic` sub-command to `review.py`, and verified with unit test (`test_heuristic_classification`).
 - Completed Type e (regulatory-violation citation): implemented `reg_cite` entity kind, regulation table schema v3 migration, `violationjoin` command in `indexer.py` (date comparison + corroborating count), and verified with unit test (`test_violation_join`).
@@ -99,3 +101,4 @@
 - Sentinel started Phase 2 execution to implement finding-types: Type f (series suppression) and Type b (undisclosed dosage).
 - Phase 2 Type f and Type b implementation has started (worker subagent worker_series_dosage_init).
 - worker_implementation subagent (teamwork_preview_worker) started Phase 2 core implementation of DB Schema Migration v4, Features Extraction, Subcommand seriesjoin, Dosage Proximity & Deduplication, and Unit Tests.
+- worker_implementation subagent (teamwork_preview_worker) completed Phase 2 core implementation: migrated database schema to v4 with series_gap_candidates table, added seq_ref/subject_ref regex extraction, implemented seriesjoin CLI command, updated gapjoin with dosage proximity/deduplication, and added/passed unit tests tests/test_series.py and tests/test_dosage.py.

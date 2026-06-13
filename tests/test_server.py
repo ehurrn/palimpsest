@@ -3,9 +3,7 @@ import json
 import os
 import sqlite3
 import pytest
-import numpy as np
 
-from palimpsest.config import load
 from palimpsest.db import migrate
 from palimpsest.server import (
     get_ro_connection,

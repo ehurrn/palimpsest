@@ -1,7 +1,6 @@
 # tests/test_embed.py
 import pytest
 from palimpsest.tasks.embed import chunk_text, process_embed, embed_task
-from palimpsest.tasks import PermanentJobError
 
 @pytest.fixture
 def test_config():

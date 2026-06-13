@@ -1,8 +1,6 @@
 # palimpsest/worker.py
 import argparse
-import datetime
 import logging
-import os
 import random
 import signal
 import sys

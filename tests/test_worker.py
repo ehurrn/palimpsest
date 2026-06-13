@@ -1,11 +1,7 @@
 import os
 import pytest
-import time
-import httpx
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from palimpsest.config import load
 from palimpsest.tasks import handler, HANDLERS, PermanentJobError
 from palimpsest.worker import run_worker
 

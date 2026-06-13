@@ -2,15 +2,12 @@
 import pytest
 import io
 import re
-import numpy as np
 from PIL import Image, ImageDraw
 
-from palimpsest.config import Config
 from palimpsest.tasks.features import (
     normalize,
     normalize_reg_cite,
     process_features,
-    rect_intersection_area,
     EXEMPTION_STAMP_PATTERNS,
     DELETED_TEXT_PATTERNS,
     extract_features

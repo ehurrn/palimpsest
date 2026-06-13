@@ -1,6 +1,5 @@
 import sqlite3
 import pytest
-from pathlib import Path
 from palimpsest.config import load
 from palimpsest.db import connect, migrate
 
@@ -78,6 +77,7 @@ def test_db_migration_and_foreign_keys(tmp_path):
     assert "redactions" in tables
     assert "entities" in tables
     assert "jobs" in tables
+    assert "series_gap_candidates" in tables
     
     # Try inserting page without document: should fail due to foreign key
     with pytest.raises(sqlite3.IntegrityError):

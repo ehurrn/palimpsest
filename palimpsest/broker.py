@@ -1,12 +1,10 @@
 # palimpsest/broker.py
 import datetime
 import json
-import os
 import sqlite3
 import threading
 import time
-from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, List
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -78,7 +76,7 @@ def reaper_loop():
     while True:
         try:
             reap_leases()
-        except Exception as e:
+        except Exception:
             pass
         time.sleep(60)
 

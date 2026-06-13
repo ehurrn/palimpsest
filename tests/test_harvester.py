@@ -1,7 +1,6 @@
 import os
 import pytest
 import time
-import httpx
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -69,7 +68,6 @@ def setup_config(tmp_path_factory):
     
     # Run migrations
     from palimpsest.config import load
-    from palimpsest.db import migrate
     migrate(load(cfg_file))
     
     yield cfg_file
@@ -77,7 +75,6 @@ def setup_config(tmp_path_factory):
 @pytest.fixture
 def clean_db():
     from palimpsest.config import load
-    from palimpsest.db import connect
     cfg = load()
     conn = connect(cfg)
     with conn:
@@ -95,7 +92,7 @@ def test_rate_limiter():
 
 @patch("httpx.Client.get")
 def test_harvester_kill_switch_on_403(mock_get, clean_db, tmp_path):
-    from palimpsest.harvester import catalog, consecutive_403_count
+    from palimpsest.harvester import catalog
     import palimpsest.harvester as harvester
     harvester.consecutive_403_count = 0
     

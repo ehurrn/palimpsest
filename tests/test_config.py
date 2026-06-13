@@ -1,7 +1,4 @@
-import os
-import pytest
-from pathlib import Path
-from palimpsest.config import load, ConfigError
+from palimpsest.config import load
 
 def test_load_config(tmp_path):
     config_content = """

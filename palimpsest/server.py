@@ -6,14 +6,13 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import Dict, Any
 import numpy as np
 import httpx
 import faiss
 from mcp.server.fastmcp import FastMCP
 
 from palimpsest.config import load, Config
-from palimpsest.db import connect
 
 logger = logging.getLogger(__name__)
 
@@ -415,7 +414,7 @@ def palimpsest_get_document(doc_id: str, page_no: int = None) -> str:
             })
             
         conn.close()
-        logger.info(f"Returned document details.")
+        logger.info("Returned document details.")
         return json.dumps({
             "metadata": doc_meta,
             "pages": pages,
@@ -509,7 +508,7 @@ def palimpsest_queue_status() -> str:
             broker_status = resp.json()
         else:
             broker_status = {"error": f"Broker returned HTTP {resp.status_code}"}
-    except Exception as e:
+    except Exception:
         broker_status = {"error": "broker unreachable"}
         
     try:

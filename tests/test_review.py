@@ -1,10 +1,8 @@
 # tests/test_review.py
 import hashlib
 import json
-import os
 import sqlite3
 import pytest
-from pathlib import Path
 
 from palimpsest.config import load
 from palimpsest.db import migrate, connect
@@ -12,7 +10,6 @@ from palimpsest.review import (
     handle_people,
     handle_gaps,
     handle_audit,
-    get_clear_context,
     log_decision_to_audit,
     apply_heuristic
 )

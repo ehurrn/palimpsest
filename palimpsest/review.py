@@ -3,11 +3,9 @@ import argparse
 import datetime
 import hashlib
 import json
-import os
 import re
 import sys
-from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Optional
 
 from palimpsest.config import load, Config
 from palimpsest.db import connect
