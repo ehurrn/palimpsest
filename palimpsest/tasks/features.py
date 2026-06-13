@@ -255,6 +255,24 @@ def normalize_reg_cite(text: str) -> str:
             return canon
     return t
 
+def normalize_outcome_ref(text: str) -> str:
+    """Normalize outcome_ref entities: prefix with future_ref: or outcome_ind:.
+
+    Args:
+        text: Raw matched text from outcome_ref patterns.
+
+    Returns:
+        Normalized string with 'future_ref:' or 'outcome_ind:' prefix.
+    """
+    t = " ".join(text.split()).strip().lower()
+    future_signals = ["to be submitted", "annual report due", "follow-up study planned",
+                      "final report to follow", "final report forthcoming", "pending final report",
+                      "pending report"]
+    if any(sig in t for sig in future_signals):
+        return "future_ref:" + t
+    return "outcome_ind:" + t
+
+
 def normalize(kind: str, text: str) -> str:
     """Normalize entities according to the rules in §7.3."""
     if kind == "person":
@@ -269,6 +287,8 @@ def normalize(kind: str, text: str) -> str:
         return normalize_location_org(text)
     elif kind == "reg_cite":
         return normalize_reg_cite(text)
+    elif kind == "outcome_ref":
+        return normalize_outcome_ref(text)
     else:
         return " ".join(text.split()).strip().lower()
 
@@ -303,6 +323,16 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
         re.IGNORECASE
     )
     protocol_pattern = re.compile(r'\b(CAL|CHI|HP)[-\s]?(\d{1,4})\b')
+    outcome_indicator_pattern = re.compile(
+        r'\b(?:results?\s+(?:of|show|indicate)|outcome\s+of|mortality|survival\s+rates?|'
+        r'post[-\s]?exposure\s+(?:survey|study|results?)|follow[-\s]?up\s+results?)\b',
+        re.IGNORECASE
+    )
+    future_ref_pattern = re.compile(
+        r'\b(?:to\s+be\s+submitted|annual\s+report\s+due|follow[-\s]?up\s+study\s+planned|'
+        r'final\s+report\s+(?:to\s+follow|forthcoming)|pending\s+(?:final\s+)?report)\b',
+        re.IGNORECASE
+    )
     
     for page_idx, page in enumerate(ocr_data):
         page_no = page["page_no"]
@@ -549,6 +579,26 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                     "char_start": char_start,
                     "char_end": char_end,
                     "bbox": bbox,
+                })
+
+        # outcome_ref extraction (both future-ref signals and outcome-indicator terms)
+        seen_outcome_spans: set[tuple[int, int]] = set()
+        for pat in (outcome_indicator_pattern, future_ref_pattern):
+            for m in pat.finditer(page_text):
+                char_start, char_end = m.start(), m.end()
+                if any(s < char_end and char_start < e for s, e in seen_outcome_spans):
+                    continue
+                seen_outcome_spans.add((char_start, char_end))
+                text = m.group(0)
+                norm = normalize("outcome_ref", text)
+                regex_entities.append({
+                    "page_no": page_no,
+                    "kind": "outcome_ref",
+                    "text": text,
+                    "norm": norm,
+                    "char_start": char_start,
+                    "char_end": char_end,
+                    "x0": None, "y0": None, "x1": None, "y1": None,
                 })
 
         # Add regex entities to final page entities list

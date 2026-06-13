@@ -699,6 +699,108 @@ def run_series_join(cfg: Config):
     logger.info(f"Series join complete: {inserted} new series gap candidates")
 
 
+def run_outcome_gap(cfg: Config) -> None:
+    """Type-d detector: protocol_code in initiation doc with no outcome doc.
+
+    An initiation doc is one that contains a protocol_code entity AND a date
+    entity on the same page. An outcome doc is one that contains an outcome_ref
+    entity whose norm starts with 'outcome_ind:' (i.e. outcome-indicator terms
+    like "mortality", "follow-up results"). Documents containing only 'future_ref:'
+    outcome_ref entities (e.g. "to be submitted") do NOT satisfy the outcome-present
+    condition — they are corroboration signals in initiation docs, not outcome docs.
+
+    Scoring:
+    - 0.70 base: initiation doc exists, no outcome doc found.
+    - +0.15 bonus: initiation doc has a future_ref outcome_ref entity.
+    - +0.10 bonus: current year is beyond start_year + 5 (overdue per IRB norms).
+    Candidates at or above score_threshold are stored in outcome_gap_candidates.
+    """
+    conn = connect(cfg)
+    threshold = float(cfg.gapjoin.get("score_threshold", 0.65))
+    current_year = int(datetime.datetime.now().year)
+
+    # One row per (pc_norm, doc_id) pair — deduplicated at SQL level
+    rows = conn.execute("""
+        SELECT e.norm AS pc_norm, e.doc_id, d.year AS doc_year
+        FROM entities e
+        JOIN documents d ON e.doc_id = d.doc_id
+        WHERE e.kind = 'protocol_code'
+        GROUP BY e.norm, e.doc_id
+    """).fetchall()
+
+    if not rows:
+        logger.info("No protocol_code entities found — skipping outcome gap join.")
+        return
+
+    # Group by protocol_code norm
+    pc_docs: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        pc_docs[str(row["pc_norm"])].append({
+            "doc_id": str(row["doc_id"]),
+            "doc_year": row["doc_year"],
+        })
+
+    inserted = 0
+    for pc_norm, doc_entries in pc_docs.items():
+        # Docs that contain this protocol_code AND have a date entity (initiation signal)
+        initiation_entries = []
+        for entry in doc_entries:
+            date_check = conn.execute(
+                "SELECT 1 FROM entities WHERE doc_id = ? AND kind = 'date' LIMIT 1",
+                (entry["doc_id"],)
+            ).fetchone()
+            if date_check:
+                initiation_entries.append(entry)
+
+        if not initiation_entries:
+            continue
+
+        # Check if ANY doc with this protocol_code has an outcome_ref with "outcome_ind:" prefix
+        outcome_docs = conn.execute("""
+            SELECT COUNT(*) FROM entities e2
+            WHERE e2.kind = 'outcome_ref'
+              AND e2.norm LIKE 'outcome_ind:%'
+              AND e2.doc_id IN (
+                  SELECT doc_id FROM entities
+                  WHERE kind = 'protocol_code' AND norm = ?
+              )
+        """, (pc_norm,)).fetchone()
+
+        has_outcome_doc = outcome_docs is not None and outcome_docs[0] > 0
+        if has_outcome_doc:
+            continue
+
+        for entry in initiation_entries:
+            doc_id = entry["doc_id"]
+            start_year = entry["doc_year"]
+
+            future_ref_row = conn.execute("""
+                SELECT entity_id FROM entities
+                WHERE doc_id = ? AND kind = 'outcome_ref' AND norm LIKE 'future_ref:%'
+                LIMIT 1
+            """, (doc_id,)).fetchone()
+            future_ref_entity_id = future_ref_row["entity_id"] if future_ref_row else None
+
+            score = 0.70
+            if future_ref_entity_id is not None:
+                score += 0.15
+            if start_year is not None and current_year > start_year + 5:
+                score += 0.10
+            score = min(score, 0.95)
+
+            if score >= threshold:
+                with conn:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO outcome_gap_candidates
+                          (protocol_code, initiation_doc_id, start_year, future_ref_entity_id, score)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (pc_norm, doc_id, start_year, future_ref_entity_id, score))
+                    if conn.execute("SELECT changes()").fetchone()[0]:
+                        inserted += 1
+
+    logger.info(f"Outcome gap join complete: {inserted} candidates inserted.")
+
+
 def print_stats(cfg: Config):
     """Print indexing and gap join statistics."""
     conn = connect(cfg)
@@ -775,6 +877,7 @@ if __name__ == "__main__":
     subparsers.add_parser("gapjoin", help="Run the redaction-gap join algorithm")
     subparsers.add_parser("violationjoin", help="Score reg_cite entities as Type-e violation candidates")
     subparsers.add_parser("seriesjoin", help="Run series gap join analysis")
+    subparsers.add_parser("outcomegap", help="Run outcome suppression gap join (Type d)")
     subparsers.add_parser("stats", help="Show indexing and join statistics")
 
     args = parser.parse_args()
@@ -789,5 +892,7 @@ if __name__ == "__main__":
         run_violation_join(cfg)
     elif args.command == "seriesjoin":
         run_series_join(cfg)
+    elif args.command == "outcomegap":
+        run_outcome_gap(cfg)
     elif args.command == "stats":
         print_stats(cfg)
