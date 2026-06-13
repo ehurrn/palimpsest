@@ -219,6 +219,29 @@ CREATE TABLE IF NOT EXISTS outcome_gap_candidates (
 );""")
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (5);")
 
+        # Schema v6 — Anonymous Identity Linkage (Type c)
+        conn.execute("""
+CREATE TABLE IF NOT EXISTS identity_link_candidates (
+  ilc_id              INTEGER PRIMARY KEY,
+  subject_doc_id      TEXT NOT NULL REFERENCES documents(doc_id),
+  subject_page        INTEGER NOT NULL,
+  subject_ref         TEXT NOT NULL,          -- e.g. "Subject 3"
+  named_doc_id        TEXT NOT NULL REFERENCES documents(doc_id),
+  named_page          INTEGER NOT NULL,
+  named_entity_id     INTEGER REFERENCES entities(entity_id),
+  org_match           REAL NOT NULL DEFAULT 0.0,
+  date_proximity      REAL NOT NULL DEFAULT 0.0,
+  dosage_bonus        REAL NOT NULL DEFAULT 0.0,
+  score               REAL NOT NULL,
+  status              TEXT DEFAULT 'candidate',  -- candidate | verified | rejected
+  reviewed_by         TEXT,
+  reviewed_at         TEXT,
+  notes               TEXT,
+  created_at          TEXT DEFAULT (datetime('now')),
+  UNIQUE(subject_doc_id, subject_page, subject_ref, named_entity_id)
+);""")
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (6);")
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "migrate":

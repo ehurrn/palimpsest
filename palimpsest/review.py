@@ -501,6 +501,134 @@ def apply_heuristic(cfg: Config):
     print(f"Heuristic classification completed: approved {approved_count} as deceased_historical, updated {denied_count} to potentially_living.")
     conn.close()
 
+def handle_links(cfg: Config):
+    """List and review identity_link_candidates (Type c).
+
+    Identity gate enforced: named person's name is only shown when
+    status='approved' AND living_status='deceased_historical' in review_queue.
+    Otherwise the person is displayed as PERSON-<entity_id>.
+    """
+    conn = connect(cfg)
+
+    cur = conn.execute("""
+        SELECT ilc.ilc_id,
+               ilc.subject_doc_id, ilc.subject_page, ilc.subject_ref,
+               ilc.named_doc_id,   ilc.named_page,   ilc.named_entity_id,
+               ilc.org_match, ilc.date_proximity, ilc.dosage_bonus, ilc.score,
+               ilc.status,
+               e.text  AS named_text,
+               e.norm  AS named_norm,
+               rq.status      AS review_status,
+               e.living_status AS living_status
+        FROM identity_link_candidates ilc
+        LEFT JOIN entities e ON ilc.named_entity_id = e.entity_id
+        LEFT JOIN review_queue rq ON rq.entity_id = e.entity_id
+        WHERE ilc.status = 'candidate'
+        ORDER BY ilc.score DESC
+    """)
+    items = cur.fetchall()
+
+    if not items:
+        print("No pending identity link candidates to review.")
+        conn.close()
+        return
+
+    print(f"Found {len(items)} identity link candidate(s).")
+    initials = None
+
+    for item in items:
+        ilc_id      = item["ilc_id"]
+        s_doc       = item["subject_doc_id"]
+        s_page      = item["subject_page"]
+        s_ref       = item["subject_ref"]
+        n_doc       = item["named_doc_id"]
+        n_page      = item["named_page"]
+        n_eid       = item["named_entity_id"]
+        score       = item["score"]
+        org_m       = item["org_match"]
+        date_p      = item["date_proximity"]
+        dos_b       = item["dosage_bonus"]
+        rev_status  = item["review_status"] or "none"
+        living      = item["living_status"] or "unknown"
+        named_text  = item["named_text"] or "(unknown)"
+
+        # Identity gate: only reveal name if fully approved
+        gate_cleared = (rev_status == "approved" and living == "deceased_historical")
+        display_name = named_text if gate_cleared else f"PERSON-{n_eid:04d}"
+        gate_label   = "GATE CLEAR" if gate_cleared else "GATE LOCKED (pending individual approval)"
+
+        s_purl = f"https://www.osti.gov/opennet/servlets/purl/{s_doc}.pdf"
+        n_purl = f"https://www.osti.gov/opennet/servlets/purl/{n_doc}.pdf"
+
+        print("\n" + "=" * 80)
+        print(f"Identity Link ID: {ilc_id}  |  Score: {score:.3f}  |  {gate_label}")
+        print(f"  org_match={org_m:.2f}  date_proximity={date_p:.2f}  dosage_bonus={dos_b:.2f}")
+        print("-" * 80)
+        print(f"Subject page:  Doc {s_doc}, Page {s_page}  ({s_purl})")
+        print(f"  Subject ref: {s_ref}")
+        print(f"Named page:    Doc {n_doc}, Page {n_page}  ({n_purl})")
+        print(f"  Named entity: {display_name}  (review_status={rev_status}, living={living})")
+        if not gate_cleared:
+            print("  \u26a0  Run `review people` to approve this person before verifying the link.")
+        print("=" * 80)
+
+        if initials is None:
+            initials = get_initials()
+
+        while True:
+            try:
+                choice = input("[v]erify / [r]eject / [s]kip / [q]uit: ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                print("\nQuitting.")
+                conn.close()
+                return
+
+            if choice in ("v", "verify"):
+                if not gate_cleared:
+                    print("  Cannot verify: identity gate is locked. Approve the named person first.")
+                    continue
+                notes = ""
+                try:
+                    notes = input("Optional note: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    pass
+                now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                with conn:
+                    conn.execute("""
+                        UPDATE identity_link_candidates
+                        SET status='verified', reviewed_by=?, reviewed_at=?, notes=?
+                        WHERE ilc_id=?
+                    """, (initials, now, notes or None, ilc_id))
+                print(f"Verified identity link {ilc_id}.")
+                break
+            elif choice in ("r", "reject"):
+                notes = ""
+                try:
+                    notes = input("Optional note: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    pass
+                now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                with conn:
+                    conn.execute("""
+                        UPDATE identity_link_candidates
+                        SET status='rejected', reviewed_by=?, reviewed_at=?, notes=?
+                        WHERE ilc_id=?
+                    """, (initials, now, notes or None, ilc_id))
+                print(f"Rejected identity link {ilc_id}.")
+                break
+            elif choice in ("s", "skip"):
+                print("Skipped.")
+                break
+            elif choice in ("q", "quit"):
+                print("Quitting.")
+                conn.close()
+                return
+            else:
+                print("Invalid option. Please enter v, r, s, or q.")
+
+    conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Palimpsest Human-in-the-Loop Review CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -517,6 +645,9 @@ def main():
     
     # heuristic sub-command
     subparsers.add_parser("heuristic", help="Apply birth-year/document-date safety heuristic to pending reviews")
+
+    # links sub-command (Type c identity linkage)
+    subparsers.add_parser("links", help="Review Type-c anonymous identity link candidates")
     
     args = parser.parse_args()
     
@@ -530,6 +661,8 @@ def main():
         handle_audit(cfg)
     elif args.command == "heuristic":
         apply_heuristic(cfg)
+    elif args.command == "links":
+        handle_links(cfg)
 
 if __name__ == "__main__":
     main()
