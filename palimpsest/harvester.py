@@ -78,7 +78,8 @@ def catalog(limit: int | None = None):
     conn = connect(cfg)
     client = httpx.Client(headers={"User-Agent": cfg.harvest["user_agent"]})
     
-    start = 0
+    # Start from the current number of cataloged documents to resume efficiently
+    start = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
     page_size = 100
     total_processed = 0
     total_entries = None
