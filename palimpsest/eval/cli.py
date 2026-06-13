@@ -50,6 +50,30 @@ def _cmd_calibrate(args):
         print(f"  {tk:8} threshold={t['threshold']} n={t['n']} ({t['reason']})")
 
 
+def _cmd_report(args):
+    import json
+    import sqlite3
+    from pathlib import Path
+    from palimpsest.eval.metrics import render_report
+    cfg = load(args.config)
+    ev = make_eval_config(cfg)
+    conn = sqlite3.connect(ev.db_path)
+    run_id = args.run if args.run is not None else conn.execute(
+        "SELECT MAX(run_id) FROM eval_runs").fetchone()[0]
+    if run_id is None:
+        raise SystemExit("no eval runs found")
+    artifact = None
+    apath = Path(cfg.eval.get("artifact_path", ""))
+    if apath and apath.exists():
+        artifact = json.loads(apath.read_text())
+    text = render_report(conn, run_id, cfg, artifact)
+    conn.close()
+    out = Path(args.out) if args.out else Path(f"reports/eval-report-{run_id}.md")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text)
+    print(f"wrote {out}")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="palimpsest-eval")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -66,6 +90,12 @@ def main(argv=None):
     c.add_argument("--config", default="config.toml")
     c.add_argument("--run", type=int, default=None, help="run_id (default: latest)")
     c.set_defaults(func=_cmd_calibrate)
+
+    rep = sub.add_parser("report", help="render a markdown metrics report")
+    rep.add_argument("--config", default="config.toml")
+    rep.add_argument("--run", type=int, default=None)
+    rep.add_argument("--out", default=None)
+    rep.set_defaults(func=_cmd_report)
 
     args = p.parse_args(argv)
     args.func(args)

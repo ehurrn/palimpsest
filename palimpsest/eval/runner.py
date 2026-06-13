@@ -147,9 +147,11 @@ def run_eval(cfg: Config, *, embed_fn=None, n_per_kind: int = 5,
     try:
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         cur = conn.execute(
-            "INSERT INTO eval_runs (started_at, scorer_git_sha, corpus_hash, seed, config_snapshot) "
-            "VALUES (?,?,?,?,?)",
-            (now, _git_sha(), _corpus_hash(cases), seed, json.dumps(cfg.eval)),
+            "INSERT INTO eval_runs "
+            "(started_at, scorer_git_sha, corpus_hash, seed, config_snapshot, notes) "
+            "VALUES (?,?,?,?,?,?)",
+            (now, _git_sha(), _corpus_hash(cases), seed, json.dumps(cfg.eval),
+             f"embed={embed_fn.__module__}.{embed_fn.__name__}"),
         )
         conn.commit()
         run_id = cur.lastrowid
