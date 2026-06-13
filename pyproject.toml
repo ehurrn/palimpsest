@@ -16,7 +16,7 @@ dependencies = [
     "pymupdf>=1.27.2.3",
     "pillow>=12.2.0",
     "pytesseract>=0.3.13",
-    "ocrmac>=1.0.1",
+    "ocrmac>=1.0.1; sys_platform == 'darwin'",
     "faiss-cpu",
     "mcp",
 ]
