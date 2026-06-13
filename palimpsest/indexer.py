@@ -3,10 +3,7 @@ import argparse
 import datetime
 import json
 import logging
-import os
-import sys
-from pathlib import Path
-from typing import Callable, List, Dict, Any, Tuple, Set
+from typing import Callable, List
 import faiss
 import numpy as np
 import httpx
@@ -36,7 +33,7 @@ def get_ollama_embedding(cfg: Config, text: str) -> List[float]:
         # Return dummy vector for fallback or fail depending on environment
         raise Exception(f"Ollama embedding failed: {e}")
 
-def get_slot_expectation(kind: str, label: str) -> str:
+def get_slot_expectation(kind: str, label: str) -> str | None:
     """Guess the expected slot entity kind based on redaction stamp label."""
     if kind == "exemption_stamp" and label:
         clean_label = label.replace(" ", "").lower()
@@ -230,7 +227,7 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
         expectation = get_slot_expectation(r["kind"], r["label"])
         
         # Candidates dict to deduplicate: entity_id -> {entity, method, score_cosine, score_anchor}
-        candidates = {}
+        candidates: dict[int, dict] = {}
         
         # 4a. Anchor Route
         if len(A) >= 2:
@@ -269,8 +266,8 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
             norms = np.linalg.norm(query_vec, axis=1, keepdims=True)
             query_vec = np.where(norms > 0, query_vec / norms, query_vec)
             
-            D, I = index.search(query_vec, topk)
-            hit_chunk_ids = [int(cid) for cid in I[0] if cid != -1]
+            _D, _idx = index.search(query_vec, topk)
+            hit_chunk_ids = [int(cid) for cid in _idx[0] if cid != -1]
             
             if hit_chunk_ids:
                 placeholders = ",".join("?" for _ in hit_chunk_ids)
@@ -297,9 +294,9 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                     candidate_entities_on_pages = cur.fetchall()
                     
                     chunk_cosines = {}
-                    for idx, cid in enumerate(I[0]):
+                    for idx, cid in enumerate(_idx[0]):
                         if cid != -1:
-                            chunk_cosines[int(cid)] = float(D[0][idx])
+                            chunk_cosines[int(cid)] = float(_D[0][idx])
                             
                     for ent in candidate_entities_on_pages:
                         for ch in hit_chunks:
@@ -313,7 +310,8 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                                         if eid in candidates:
                                             # Met by both routes!
                                             candidates[eid]["method"] = "both"
-                                            if candidates[eid]["score_cosine"] is None or cosine > candidates[eid]["score_cosine"]:
+                                            prev_cosine = candidates[eid].get("score_cosine")
+                                            if prev_cosine is None or cosine > prev_cosine:
                                                 candidates[eid]["score_cosine"] = cosine
                                         else:
                                             candidates[eid] = {
@@ -348,8 +346,9 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                             chunk_vec = chunk_vec / norm_c
                         # Cosine similarity with ctx
                         if ctx_emb is not None:
-                            ctx_norm = np.linalg.norm(ctx_emb)
-                            norm_ctx = ctx_emb / ctx_norm if ctx_norm > 0 else ctx_emb
+                            ctx_arr = np.array(ctx_emb, dtype=np.float32)
+                            ctx_norm = np.linalg.norm(ctx_arr)
+                            norm_ctx = ctx_arr / ctx_norm if ctx_norm > 0 else ctx_arr
                             sc_cosine = float(np.dot(norm_ctx, chunk_vec))
                         else:
                             sc_cosine = 0.0
@@ -407,6 +406,90 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
             
     logger.info("Redaction-gap join run completed.")
 
+def run_violation_join(cfg: Config):
+    """Type-e detector: find pages citing a regulation and score them as violation candidates.
+
+    Scoring: the document year is compared to the regulation's effective_date.
+    - Temporal violation (doc date < reg effective date): score = 0.70 base.
+    - Each additional corroborating reg_cite entity on the same page: +0.10 (cap 0.95).
+    Candidates at or above score_threshold go into violation_candidates.
+    """
+    conn = connect(cfg)
+    threshold = float(cfg.gapjoin.get("score_threshold", 0.65))
+
+    # Load all regulations with their effective year
+    regs: dict[int, dict] = {
+        int(row["reg_id"]): {
+            "citation": str(row["citation"]),
+            "effective_date": row["effective_date"],
+            "effective_year": int(str(row["effective_date"])[:4]) if row["effective_date"] else None,
+        }
+        for row in conn.execute("SELECT reg_id, citation, effective_date FROM regulation_citations").fetchall()
+    }
+
+    if not regs:
+        logger.warning("No regulations seeded — run db.py migrate first")
+        return
+
+    # Fetch all reg_cite entities, joined to their document year
+    rows = conn.execute("""
+        SELECT e.entity_id, e.doc_id, e.page_no, e.norm, d.year AS doc_year
+        FROM entities e
+        JOIN documents d ON e.doc_id = d.doc_id
+        WHERE e.kind = 'reg_cite'
+    """).fetchall()
+
+    inserted = 0
+    for row in rows:
+        entity_id = row["entity_id"]
+        doc_id = row["doc_id"]
+        page_no = row["page_no"]
+        doc_year = row["doc_year"]
+        cite_norm = row["norm"]
+
+        # Match this norm to a seeded regulation
+        matched_reg_id = None
+        for reg_id, reg in regs.items():
+            if reg["citation"].lower() in cite_norm.lower() or cite_norm.lower() in reg["citation"].lower():
+                matched_reg_id = reg_id
+                break
+
+        if matched_reg_id is None:
+            continue
+
+        reg = regs[matched_reg_id]
+        reg_year = reg["effective_year"]
+
+        # Temporal scoring
+        if doc_year and reg_year and doc_year < reg_year:
+            base_score = 0.70
+            violation_type = "pre_regulation"
+        else:
+            base_score = 0.65
+            violation_type = "possible_violation"
+
+        # Count corroborating reg_cite entities on the same page
+        corroborating = conn.execute("""
+            SELECT COUNT(*) FROM entities
+            WHERE doc_id = ? AND page_no = ? AND kind = 'reg_cite' AND entity_id != ?
+        """, (doc_id, page_no, entity_id)).fetchone()[0]
+        score = min(base_score + corroborating * 0.10, 0.95)
+
+        if score < threshold:
+            continue
+
+        with conn:
+            conn.execute("""
+                INSERT OR IGNORE INTO violation_candidates
+                  (doc_id, page_no, reg_id, reg_cite_entity_id, doc_year, violation_type, score, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate')
+            """, (doc_id, page_no, matched_reg_id, entity_id, doc_year, violation_type, score))
+            if conn.execute("SELECT changes()").fetchone()[0]:
+                inserted += 1
+
+    logger.info(f"Violation join complete: {inserted} new candidates (threshold={threshold})")
+
+
 def print_stats(cfg: Config):
     """Print indexing and gap join statistics."""
     conn = connect(cfg)
@@ -457,21 +540,33 @@ def print_stats(cfg: Config):
         print(f"  [{lower:.1f} - {upper:.1f}): {decile_counts[d]}")
     print(f"Pending HITL reviews: {pending_reviews}")
 
+    # Violation candidates (Type e)
+    cur = conn.execute("SELECT COUNT(*) FROM violation_candidates")
+    total_vc = cur.fetchone()[0]
+    cur = conn.execute("SELECT violation_type, COUNT(*) FROM violation_candidates GROUP BY violation_type")
+    vc_types = {row[0]: row[1] for row in cur.fetchall()}
+    print(f"\nViolation Candidates (Type e): {total_vc}")
+    for vtype, cnt in vc_types.items():
+        print(f"  - {vtype}: {cnt}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Palimpsest Indexer and Gap Join CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    
+
     subparsers.add_parser("build", help="Fold pending_embeddings.jsonl into FAISS")
     subparsers.add_parser("gapjoin", help="Run the redaction-gap join algorithm")
+    subparsers.add_parser("violationjoin", help="Score reg_cite entities as Type-e violation candidates")
     subparsers.add_parser("stats", help="Show indexing and join statistics")
-    
+
     args = parser.parse_args()
-    
+
     cfg = load()
-    
+
     if args.command == "build":
         build_index(cfg)
     elif args.command == "gapjoin":
         run_gapjoin(cfg)
+    elif args.command == "violationjoin":
+        run_violation_join(cfg)
     elif args.command == "stats":
         print_stats(cfg)

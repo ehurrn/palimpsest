@@ -115,6 +115,77 @@ def migrate(cfg):
         );""")
         conn.execute("UPDATE schema_version SET version = 2 WHERE version < 2;")
 
+        # Schema v3 — Type-e regulatory violation support
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS regulation_citations (
+          reg_id         INTEGER PRIMARY KEY,
+          citation       TEXT NOT NULL UNIQUE,
+          effective_date TEXT,
+          text_snippet   TEXT
+        );""")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS violation_candidates (
+          vc_id               INTEGER PRIMARY KEY,
+          doc_id              TEXT NOT NULL,
+          page_no             INTEGER NOT NULL,
+          reg_id              INTEGER NOT NULL REFERENCES regulation_citations(reg_id),
+          reg_cite_entity_id  INTEGER REFERENCES entities(entity_id),
+          doc_year            INTEGER,
+          violation_type      TEXT NOT NULL,
+          score               REAL NOT NULL,
+          status              TEXT DEFAULT 'candidate',
+          reviewed_by TEXT, reviewed_at TEXT, notes TEXT,
+          UNIQUE(doc_id, page_no, reg_id)
+        );""")
+        # Seed canonical regulations (INSERT OR IGNORE — idempotent)
+        REGS = [
+            ("45 CFR 46",
+             "1991-06-18",
+             "No investigator may involve a human being as a subject in research unless the investigator "
+             "has obtained the legally effective informed consent of the subject or the subject's legally "
+             "authorized representative. An investigator shall seek such consent only under circumstances "
+             "that provide the prospective subject sufficient opportunity to consider whether to participate."),
+            ("45 CFR 219",
+             "1992-01-14",
+             "This policy applies to all research involving human subjects conducted, supported, or "
+             "otherwise subject to regulation by the Department of Energy. Each institution engaged in "
+             "research which is covered by this policy shall provide written assurance satisfactory to "
+             "the Department that it will comply with the requirements set forth in this policy."),
+            ("Belmont Report",
+             "1979-04-18",
+             "Respect for persons incorporates at least two ethical convictions: first, that individuals "
+             "should be treated as autonomous agents, and second, that persons with diminished autonomy "
+             "are entitled to protection. The principle of respect for persons thus divides into two "
+             "separate moral requirements: the requirement to acknowledge autonomy and the requirement "
+             "to protect those with diminished autonomy."),
+            ("Declaration of Helsinki",
+             "1964-06-01",
+             "In medical research involving human subjects, the well-being of the individual research "
+             "subject must take precedence over all other interests. It is the duty of the physician "
+             "to promote and safeguard the health of patients. The physician's knowledge and conscience "
+             "are dedicated to the fulfillment of this duty."),
+            ("Nuremberg Code",
+             "1947-08-20",
+             "The voluntary consent of the human subject is absolutely essential. This means that the "
+             "person involved should have legal capacity to give consent; should be so situated as to "
+             "be able to exercise free power of choice, without the intervention of any element of "
+             "force, fraud, deceit, duress, over-reaching, or other ulterior form of constraint or "
+             "coercion."),
+            ("National Research Act",
+             "1974-07-12",
+             "The Secretary shall establish a commission to be known as the National Commission for the "
+             "Protection of Human Subjects of Biomedical and Behavioral Research. The Commission shall "
+             "carry out a comprehensive investigation and study to identify the basic ethical principles "
+             "which should underlie the conduct of biomedical and behavioral research involving human "
+             "subjects."),
+        ]
+        for citation, eff_date, snippet in REGS:
+            conn.execute(
+                "INSERT OR IGNORE INTO regulation_citations (citation, effective_date, text_snippet) VALUES (?, ?, ?)",
+                (citation, eff_date, snippet)
+            )
+        conn.execute("UPDATE schema_version SET version = 3 WHERE version < 3;")
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "migrate":

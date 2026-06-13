@@ -1,6 +1,9 @@
 # Work Log
 
 ## 2026-06-12
+- Created OFFLINE-INSTRUCTIONS.md to guide local Ollama models (specifically Qwen 27B, Gemma 12B, and Granite 8B) on Phase 2 next steps and safety invariants.
+- Completed Type e (regulatory-violation citation): reg_cite entity extraction in features.py (7 patterns, span-dedup, normalize_reg_cite), run_violation_join() + violationjoin CLI in indexer.py (temporal scoring, corroboration bonus), stats updated. 72 tests green.
+- Starting Type e (regulatory-violation citation): reg_cite entity kind, regulation_citations table (schema v3), violation scorer.
 - Phase 2 begun. Reverted AGY_BULK bulk approvals: 5,291 review_queue rows → pending, 1,320 gap_candidates → candidate. Identity gate restored (all entities remain living_status=unknown). Wrote `specs/FINDING-TYPES.md` with six finding-types (a-f), detectors, corroboration rules, and build order (e → f → b → d → c). 6k-doc fetch running; M4 + gonktop workers processing in parallel.
 - Reviewed Phase-1 state (verification report = SCALE) and wrote `palimpsest-phase2-plan.md`: carry-over blockers, six-finding-type generalization, Lane A orchestrator, harvester scaling, re-asserted gates. FLAGGED: bulk approval of all 5,258 persons + bulk verification of 1,474 gaps violates Architecture Iron Rule #3 (identity HITL gate) — Phase 2 must reinstate per-entity review before any output ships.
 - Launched Phase 2 teamwork_preview subagent team to execute safety gate revert, M4 Ollama repair, and finding-types specification.
@@ -91,4 +94,6 @@
 ## 2026-06-12 (Phase 2 Start)
 - Sentinel started Phase 2 execution, spawning the Project Orchestrator to address identity safety gates, M4 worker repairs, OCR coverage verification, and specs/FINDING-TYPES.md.
 - Database and Infrastructure Explorer started investigation of database and local environment status.
+- Database and Infrastructure Explorer completed investigation of database and local environment status. Detailed report written to .agents/explorer_r1_r2/handoff.md.
+
 

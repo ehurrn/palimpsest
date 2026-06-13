@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw
 from palimpsest.config import Config
 from palimpsest.tasks.features import (
     normalize,
+    normalize_reg_cite,
     process_features,
     rect_intersection_area,
     EXEMPTION_STAMP_PATTERNS,
@@ -266,3 +267,53 @@ def test_handler_http_404_raises_permanent_error(test_config, monkeypatch):
     job = {"doc_id": "123"}
     with pytest.raises(PermanentJobError):
         extract_features(test_config, job)
+
+
+# ── Type e: reg_cite entity extraction and normalization ──────────────────────
+
+def test_normalize_reg_cite_cfr():
+    assert normalize_reg_cite("45 C.F.R. Part 46") == "45 CFR 46"
+    assert normalize_reg_cite("45 CFR § 219") == "45 CFR 219"
+    assert normalize_reg_cite("45 CFR 46.116") == "45 CFR 46.116"
+
+def test_normalize_reg_cite_named():
+    assert normalize_reg_cite("Common Rule") == "Common Rule"
+    assert normalize_reg_cite("the Belmont Report") == "Belmont Report"
+    assert normalize_reg_cite("Declaration of Helsinki") == "Declaration of Helsinki"
+    assert normalize_reg_cite("Nuremberg Code") == "Nuremberg Code"
+    assert normalize_reg_cite("National Research Act") == "National Research Act"
+
+def test_normalize_dispatches_reg_cite():
+    assert normalize("reg_cite", "45 CFR 46") == "45 CFR 46"
+
+def test_reg_cite_entities_extracted(test_config):
+    ocr_data = [{
+        "page_no": 1,
+        "lines": [
+            {"text": "The study was conducted under 45 CFR 46 and the Common Rule.", "bbox": [0.0, 0.0, 1.0, 0.05]},
+            {"text": "The Declaration of Helsinki also applies to all procedures.", "bbox": [0.0, 0.05, 1.0, 0.10]},
+        ],
+    }]
+    result = process_features(b"", ocr_data, test_config)
+    entities = result["entities"]
+    reg_cites = [e for e in entities if e["kind"] == "reg_cite"]
+    norms = [e["norm"] for e in reg_cites]
+    assert any("45 CFR 46" in n for n in norms), f"45 CFR 46 not found in {norms}"
+    assert any("Common Rule" in n for n in norms), f"Common Rule not found in {norms}"
+    assert any("Declaration of Helsinki" in n or "Helsinki" in n for n in norms), f"Helsinki not in {norms}"
+
+def test_reg_cite_no_duplicates_across_patterns(test_config):
+    # "Common Rule" should only appear once even though multiple patterns could match
+    ocr_data = [{
+        "page_no": 1,
+        "lines": [
+            {"text": "Under the Common Rule (45 CFR 46) consent is required.", "bbox": [0.0, 0.0, 1.0, 0.05]},
+        ],
+    }]
+    result = process_features(b"", ocr_data, test_config)
+    entities = result["entities"]
+    reg_cites = [e for e in entities if e["kind"] == "reg_cite"]
+    norms = [e["norm"] for e in reg_cites]
+    # Each span should appear once
+    for norm in set(norms):
+        assert norms.count(norm) == 1, f"Duplicate reg_cite norm '{norm}'"

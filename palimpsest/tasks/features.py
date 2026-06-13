@@ -1,7 +1,7 @@
 # palimpsest/tasks/features.py
 import re
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 import httpx
 import numpy as np
 import cv2
@@ -233,6 +233,28 @@ def normalize_protocol_code(text: str) -> str:
 def normalize_location_org(text: str) -> str:
     return " ".join(text.split()).strip().lower()
 
+def normalize_reg_cite(text: str) -> str:
+    t = " ".join(text.split()).strip()
+    # Canonicalise CFR: "45 CFR Part 46" / "45 C.F.R. §46" → "45 CFR 46"
+    m = re.match(r'^(\d+)\s*C\.?F\.?R\.?\s*(?:Part\s*|§\s*)?(\d+(?:\.\d+)*).*$', t, re.IGNORECASE)
+    if m:
+        return f"{m.group(1)} CFR {m.group(2)}"
+    m = re.match(r'^(\d+)\s*U\.S\.C\.?\s*[§]?\s*(\d+(?:\.\d+)*).*$', t, re.IGNORECASE)
+    if m:
+        return f"{m.group(1)} USC {m.group(2)}"
+    named = {
+        r'common\s+rule': 'Common Rule',
+        r'belmont\s+report': 'Belmont Report',
+        r'declaration\s+of\s+helsinki': 'Declaration of Helsinki',
+        r'nuremberg\s+code': 'Nuremberg Code',
+        r'national\s+research\s+act': 'National Research Act',
+    }
+    tl = t.lower()
+    for pat, canon in named.items():
+        if re.search(pat, tl):
+            return canon
+    return t
+
 def normalize(kind: str, text: str) -> str:
     """Normalize entities according to the rules in §7.3."""
     if kind == "person":
@@ -245,6 +267,8 @@ def normalize(kind: str, text: str) -> str:
         return normalize_protocol_code(text)
     elif kind in ("location", "org"):
         return normalize_location_org(text)
+    elif kind == "reg_cite":
+        return normalize_reg_cite(text)
     else:
         return " ".join(text.split()).strip().lower()
 
@@ -264,7 +288,16 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
         except Exception as e:
             logger.error(f"Failed to open PDF with PyMuPDF: {e}")
             
-    # Compile the dosage and protocol patterns for the page text
+    # Compile the dosage, protocol, and reg_cite patterns for the page text
+    reg_cite_patterns = [
+        re.compile(r'\b\d+\s*C\.?F\.?R\.?\s*(?:Part\s*|§\s*)?\d+(?:\.\d+)*\b', re.IGNORECASE),
+        re.compile(r'\b\d+\s*U\.S\.C\.?\s*[§]?\s*\d+(?:\.\d+)*\b'),
+        re.compile(r'\bCommon\s+Rule\b', re.IGNORECASE),
+        re.compile(r'\bBelmont\s+Report\b', re.IGNORECASE),
+        re.compile(r'\bDeclaration\s+of\s+Helsinki\b', re.IGNORECASE),
+        re.compile(r'\bNuremberg\s+Code\b', re.IGNORECASE),
+        re.compile(r'\bNational\s+Research\s+Act\b', re.IGNORECASE),
+    ]
     dosage_pattern = re.compile(
         r'\b\d+(?:\.\d+)?\s*(?:r|rad|rads|rem|mr|mrem|roentgen|uCi|μCi|mCi|curies?)\b',
         re.IGNORECASE
@@ -491,6 +524,33 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                 "bbox": bbox
             })
             
+        # Regulatory-citation extraction (Type e)
+        seen_reg_spans: set[tuple[int, int]] = set()
+        for pat in reg_cite_patterns:
+            for m in pat.finditer(page_text):
+                char_start = m.start()
+                char_end = m.end()
+                # Skip if this span overlaps any already-found reg_cite
+                if any(s < char_end and char_start < e for s, e in seen_reg_spans):
+                    continue
+                seen_reg_spans.add((char_start, char_end))
+                text = m.group(0)
+                norm = normalize("reg_cite", text)
+                bbox = [0.0, 0.0, 1.0, 1.0]
+                for start, end, b in line_offsets:
+                    if start <= char_start <= end:
+                        bbox = b
+                        break
+                regex_entities.append({
+                    "page_no": page_no,
+                    "kind": "reg_cite",
+                    "text": text,
+                    "norm": norm,
+                    "char_start": char_start,
+                    "char_end": char_end,
+                    "bbox": bbox,
+                })
+
         # Add regex entities to final page entities list
         page_entities = list(regex_entities)
         
