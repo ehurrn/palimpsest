@@ -1,0 +1,51 @@
+"""`palimpsest-eval` — run the synthetic evaluation harness."""
+from __future__ import annotations
+
+import argparse
+import sqlite3
+
+from palimpsest.config import load
+from palimpsest.eval.isolation import make_eval_config
+from palimpsest.eval.runner import run_eval
+
+
+def _cmd_run(args):
+    cfg = load(args.config)
+    embed_fn = None
+    if args.real_embed:
+        from palimpsest.scorers.type_a import get_ollama_embedding
+        embed_fn = get_ollama_embedding
+    run_id = run_eval(
+        cfg, embed_fn=embed_fn, n_per_kind=args.n_per_kind,
+        seed=args.seed, types=tuple(args.types.split(",")),
+    )
+    ev = make_eval_config(cfg)
+    conn = sqlite3.connect(ev.db_path)
+    rows = conn.execute(
+        "SELECT type_key, label, COUNT(*) FROM eval_results WHERE run_id=? "
+        "GROUP BY type_key, label ORDER BY type_key, label", (run_id,),
+    ).fetchall()
+    conn.close()
+    embed_kind = "REAL(ollama)" if args.real_embed else "STUB(lexical — NOT valid precision)"
+    print(f"run_id={run_id}  embed={embed_kind}")
+    for type_key, label, n in rows:
+        print(f"  {type_key:8} {label:3} {n}")
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="palimpsest-eval")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run", help="generate cases, run scorers, grade, persist")
+    r.add_argument("--config", default="config.toml")
+    r.add_argument("--n-per-kind", type=int, default=5, dest="n_per_kind")
+    r.add_argument("--seed", type=int, default=None)
+    r.add_argument("--types", default="type_a,type_b,type_c")
+    r.add_argument("--real-embed", action="store_true", dest="real_embed",
+                   help="use the production Ollama embedder instead of the lexical stub")
+    r.set_defaults(func=_cmd_run)
+    args = p.parse_args(argv)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
