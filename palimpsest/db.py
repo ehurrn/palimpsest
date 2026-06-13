@@ -202,6 +202,23 @@ def migrate(cfg):
         );""")
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (4);")
 
+        # Schema v5 — Outcome Suppression Gap (Type d)
+        conn.execute("""
+CREATE TABLE IF NOT EXISTS outcome_gap_candidates (
+  ogc_id              INTEGER PRIMARY KEY,
+  protocol_code       TEXT NOT NULL,
+  initiation_doc_id   TEXT NOT NULL REFERENCES documents(doc_id),
+  start_year          INTEGER,
+  future_ref_entity_id INTEGER REFERENCES entities(entity_id),
+  score               REAL NOT NULL,
+  status              TEXT DEFAULT 'candidate',
+  reviewed_by         TEXT,
+  reviewed_at         TEXT,
+  notes               TEXT,
+  UNIQUE(protocol_code, initiation_doc_id)
+);""")
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (5);")
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "migrate":
