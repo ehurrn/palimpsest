@@ -8,8 +8,12 @@ import faiss
 import numpy as np
 import httpx
 
+import math
+import re
+from collections import defaultdict
 from palimpsest.config import load, Config
 from palimpsest.db import connect
+from palimpsest.tasks.features import normalize
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -323,6 +327,7 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
 
                                         
         # 5. Score Candidates
+        scored_candidates: list[dict] = []
         for eid, cand in list(candidates.items()):
             e = cand["entity"]
             
@@ -374,20 +379,104 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
             # Total score
             tot_score = w_cosine * sc_cosine + w_anchor * sc_anchor + w_kind * sc_kind
             
-            # 6. Persist to gap_candidates
+            if e["kind"] == "dosage":
+                # Proximity score check: nearest subject_ref or person on candidate page
+                cur_other = conn.execute(
+                    "SELECT char_start, char_end FROM entities WHERE doc_id = ? AND page_no = ? AND kind IN ('subject_ref', 'person')",
+                    (e["doc_id"], e["page_no"])
+                )
+                other_ents = cur_other.fetchall()
+                min_dist = None
+                for o in other_ents:
+                    o_start = o["char_start"]
+                    o_end = o["char_end"]
+                    if o_start is None or o_end is None or e["char_start"] is None or e["char_end"] is None:
+                        continue
+                    if o_start < e["char_end"] and e["char_start"] < o_end:
+                        dist = 0
+                    else:
+                        dist = min(abs(e["char_start"] - o_end), abs(o_start - e["char_end"]))
+                    if min_dist is None or dist < min_dist:
+                        min_dist = dist
+                
+                proximity_score = 0.0
+                if min_dist is not None:
+                    proximity_score = math.exp(-min_dist / 500)
+                
+                tot_score += 0.1 * proximity_score
+                
+                # Check subject reference co-occurrence on both candidate and redaction pages
+                cur_c = conn.execute(
+                    "SELECT norm FROM entities WHERE doc_id = ? AND page_no = ? AND kind IN ('subject_ref', 'person')",
+                    (e["doc_id"], e["page_no"])
+                )
+                cand_subj = {row["norm"] for row in cur_c.fetchall()}
+                
+                cur_r = conn.execute(
+                    "SELECT norm FROM entities WHERE doc_id = ? AND page_no = ? AND kind IN ('subject_ref', 'person')",
+                    (r["doc_id"], r["page_no"])
+                )
+                red_subj = {row["norm"] for row in cur_r.fetchall()}
+                
+                if cand_subj & red_subj:
+                    tot_score += 0.15
+                    
+                # Check dosage value match
+                cur_d = conn.execute(
+                    "SELECT 1 FROM entities WHERE doc_id = ? AND page_no = ? AND kind = 'dosage' AND norm = ? LIMIT 1",
+                    (r["doc_id"], r["page_no"], e["norm"])
+                )
+                has_red_dosage = cur_d.fetchone() is not None
+                
+                in_context = (e["norm"] in ctx_before.lower()) or (e["norm"] in ctx_after.lower())
+                if has_red_dosage or in_context:
+                    tot_score += 0.15
+                    
+                tot_score = min(tot_score, 1.0)
+                
+            scored_candidates.append({
+                "eid": eid,
+                "cand": cand,
+                "tot_score": tot_score,
+                "sc_cosine": sc_cosine,
+                "sc_anchor": sc_anchor,
+                "sc_kind": sc_kind
+            })
+            
+        # Group and deduplicate
+        final_candidates = []
+        dosage_groups = defaultdict(list)
+        non_dosage_candidates = []
+        
+        for sc in scored_candidates:
+            if sc["cand"]["entity"]["kind"] == "dosage":
+                dosage_groups[sc["cand"]["entity"]["norm"]].append(sc)
+            else:
+                non_dosage_candidates.append(sc)
+                
+        for norm, group in dosage_groups.items():
+            best_sc = max(group, key=lambda x: x["tot_score"])
+            final_candidates.append(best_sc)
+            
+        final_candidates.extend(non_dosage_candidates)
+        
+        # Now persist final candidates
+        for sc in final_candidates:
+            tot_score = sc["tot_score"]
             if tot_score >= score_threshold:
-                # Write to database (UPSERT on conflict)
+                eid = sc["eid"]
+                cand = sc["cand"]
+                e = cand["entity"]
                 with conn:
                     cur = conn.execute("""
                         INSERT OR REPLACE INTO gap_candidates 
                         (redaction_id, clear_entity_id, score, score_cosine, score_anchor, score_kind, method, status)
                         VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate')
                         RETURNING gap_id
-                    """, (redaction_id, eid, tot_score, sc_cosine, sc_anchor, sc_kind, cand["method"]))
+                    """, (redaction_id, eid, tot_score, sc["sc_cosine"], sc["sc_anchor"], sc["sc_kind"], cand["method"]))
                     gap_row = cur.fetchone()
                     gap_id = gap_row["gap_id"] if gap_row else None
                     
-                    # 7. Auto-flag for HITL if kind is person
                     if e["kind"] == "person" and gap_id is not None:
                         chk = conn.execute("SELECT 1 FROM review_queue WHERE entity_id = ?", (eid,))
                         if not chk.fetchone():
@@ -490,6 +579,126 @@ def run_violation_join(cfg: Config):
     logger.info(f"Violation join complete: {inserted} new candidates (threshold={threshold})")
 
 
+def run_series_join(cfg: Config):
+    """Run series gap join analysis (Type f)."""
+    conn = connect(cfg)
+    
+    # 1. Parse accessions from documents table
+    cur = conn.execute("SELECT doc_id, accession FROM documents WHERE accession IS NOT NULL AND accession != ''")
+    rows = cur.fetchall()
+    
+    # Group accessions by prefix
+    # prefix -> list of (num, doc_id, padding_len, accession_str)
+    groups = defaultdict(list)
+    
+    for row in rows:
+        doc_id = row["doc_id"]
+        acc = row["accession"]
+        # Split into prefix and number
+        m = re.match(r'^([^\d]+)(\d+)$', acc.strip())
+        if m:
+            prefix = m.group(1)
+            digits_str = m.group(2)
+            num = int(digits_str)
+            padding_len = len(digits_str)
+            groups[prefix].append((num, doc_id, padding_len, acc))
+            
+    inserted = 0
+    for prefix, accs in groups.items():
+        if not accs:
+            continue
+        # Sort by number
+        accs.sort(key=lambda x: x[0])
+        present_nums = [x[0] for x in accs]
+        present_set = set(present_nums)
+        
+        # Mapping from number to (doc_id, accession_str, padding_len)
+        num_map = {num: (doc_id, acc, pad_len) for num, doc_id, pad_len, acc in accs}
+        
+        min_num = min(present_set)
+        max_num = max(present_set)
+        total_range_count = max_num - min_num + 1
+        
+        if total_range_count <= 1:
+            continue
+            
+        missing_count = total_range_count - len(present_set)
+        gap_ratio = missing_count / total_range_count
+        
+        # Only process if gap ratio > 20%
+        if gap_ratio <= 0.20:
+            continue
+            
+        # Standard padding_len to use if we need to format missing accession
+        # Let's use the padding_len of the first document in the group
+        default_pad = accs[0][2]
+        
+        # Identify missing numbers in the range
+        for num in range(min_num + 1, max_num):
+            if num in present_set:
+                continue
+                
+            # Form missing accession
+            missing_acc = f"{prefix}{num:0{default_pad}d}"
+            norm_missing_acc = normalize("seq_ref", missing_acc)
+            
+            # Check flanking documents (N-1 or N+1 sequence)
+            doc_id_prev = num_map.get(num - 1, [None])[0] if (num - 1) in present_set else None
+            doc_id_next = num_map.get(num + 1, [None])[0] if (num + 1) in present_set else None
+            
+            ref_prev = False
+            entity_id_prev = None
+            if doc_id_prev:
+                cur_ent = conn.execute(
+                    "SELECT entity_id FROM entities WHERE doc_id = ? AND kind = 'seq_ref' AND norm = ? LIMIT 1",
+                    (doc_id_prev, norm_missing_acc)
+                )
+                ent_row = cur_ent.fetchone()
+                if ent_row:
+                    ref_prev = True
+                    entity_id_prev = ent_row["entity_id"]
+                    
+            ref_next = False
+            entity_id_next = None
+            if doc_id_next:
+                cur_ent = conn.execute(
+                    "SELECT entity_id FROM entities WHERE doc_id = ? AND kind = 'seq_ref' AND norm = ? LIMIT 1",
+                    (doc_id_next, norm_missing_acc)
+                )
+                ent_row = cur_ent.fetchone()
+                if ent_row:
+                    ref_next = True
+                    entity_id_next = ent_row["entity_id"]
+                    
+            # Compute score
+            if ref_prev and ref_next:
+                score = 0.90
+            elif ref_prev or ref_next:
+                score = 0.70
+            else:
+                score = 0.50
+                
+            if score >= 0.65:
+                # Flanking doc ID and entity ID to reference
+                flanking_doc_id = doc_id_prev if ref_prev else doc_id_next
+                ref_entity_id = entity_id_prev if ref_prev else entity_id_next
+                
+                with conn:
+                    conn.execute("""
+                        INSERT INTO series_gap_candidates 
+                          (series_prefix, missing_number, missing_accession, flanking_doc_id, ref_entity_id, score, status)
+                        VALUES (?, ?, ?, ?, ?, ?, 'candidate')
+                        ON CONFLICT(missing_accession) DO UPDATE SET
+                          score = excluded.score,
+                          flanking_doc_id = excluded.flanking_doc_id,
+                          ref_entity_id = excluded.ref_entity_id
+                    """, (prefix, num, missing_acc, flanking_doc_id, ref_entity_id, score))
+                    if conn.execute("SELECT changes()").fetchone()[0]:
+                        inserted += 1
+                        
+    logger.info(f"Series join complete: {inserted} new series gap candidates")
+
+
 def print_stats(cfg: Config):
     """Print indexing and gap join statistics."""
     conn = connect(cfg)
@@ -549,6 +758,15 @@ def print_stats(cfg: Config):
     for vtype, cnt in vc_types.items():
         print(f"  - {vtype}: {cnt}")
 
+    # Series gap candidates (Type f)
+    cur = conn.execute("SELECT COUNT(*) FROM series_gap_candidates")
+    total_sg = cur.fetchone()[0]
+    cur = conn.execute("SELECT status, COUNT(*) FROM series_gap_candidates GROUP BY status")
+    sg_status = {row[0]: row[1] for row in cur.fetchall()}
+    print(f"\nSeries Gap Candidates (Type f): {total_sg}")
+    for status, cnt in sg_status.items():
+        print(f"  - {status}: {cnt}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Palimpsest Indexer and Gap Join CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -556,6 +774,7 @@ if __name__ == "__main__":
     subparsers.add_parser("build", help="Fold pending_embeddings.jsonl into FAISS")
     subparsers.add_parser("gapjoin", help="Run the redaction-gap join algorithm")
     subparsers.add_parser("violationjoin", help="Score reg_cite entities as Type-e violation candidates")
+    subparsers.add_parser("seriesjoin", help="Run series gap join analysis")
     subparsers.add_parser("stats", help="Show indexing and join statistics")
 
     args = parser.parse_args()
@@ -568,5 +787,7 @@ if __name__ == "__main__":
         run_gapjoin(cfg)
     elif args.command == "violationjoin":
         run_violation_join(cfg)
+    elif args.command == "seriesjoin":
+        run_series_join(cfg)
     elif args.command == "stats":
         print_stats(cfg)
