@@ -21,6 +21,7 @@ class Config:
     gapjoin: dict
     models: dict
     nodes: dict
+    orchestrator: dict
 
 def load(path: str | Path | None = None) -> Config:
     if not path:
@@ -52,5 +53,6 @@ def load(path: str | Path | None = None) -> Config:
         embed=data["embed"],
         gapjoin=data["gapjoin"],
         models=data["models"],
-        nodes=data["nodes"]
+        nodes=data["nodes"],
+        orchestrator=data.get("orchestrator", {})
     )

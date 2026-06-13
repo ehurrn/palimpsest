@@ -1,6 +1,7 @@
 # Work Log
 
 ## 2026-06-13
+- Phase 3 implementation resumed (solo — agy). Mesh agents previously wrote type_a.py, type_b.py, and six scorer test files but left base.py, __init__.py, type_c.py, type_d.py, type_e.py, type_f.py missing. Config orchestrator field, pyproject entry points, and orchestrator.py also remain incomplete. Starting now with base.py + __init__.py to unblock failing tests.
 - Completed implementation of code review improvements: optimized run_identity_link database queries (O(S * N) to single query) and unified outcome_ref entity format to use standard 'bbox' representation. All tests verified green.
 - Completed Type c (anonymous identity linkage): schema v6 `identity_link_candidates` table, `_edit_distance()` helper, `run_identity_link()` scorer (org+date+dosage weighted formula), `identitylink` CLI subcommand, `review links` HITL gate (enforces deceased_historical approval before any name surface), bumped preflight EXPECTED_VERSION to 6. 10 new tests in `tests/test_identity.py`; full suite 101 passing. Pushed to origin/main. All six Phase 2 finding-types now implemented.
 - Completed OFFLINE-INSTRUCTIONS.md rewrite: updated to reflect Phase 2 state (Types b/d/e/f complete, schema v5, 91 tests), full Type c implementation spec with DB schema, scorer pseudocode, review gate, and test requirements. This is the handoff document for offline local-model sessions.
@@ -108,3 +109,5 @@
 - Phase 2 Type f and Type b implementation has started (worker subagent worker_series_dosage_init).
 - worker_implementation subagent (teamwork_preview_worker) started Phase 2 core implementation of DB Schema Migration v4, Features Extraction, Subcommand seriesjoin, Dosage Proximity & Deduplication, and Unit Tests.
 - worker_implementation subagent (teamwork_preview_worker) completed Phase 2 core implementation: migrated database schema to v4 with series_gap_candidates table, added seq_ref/subject_ref regex extraction, implemented seriesjoin CLI command, updated gapjoin with dosage proximity/deduplication, and added/passed unit tests tests/test_series.py and tests/test_dosage.py.
+
+[HUMAN ADDED NOTE: WE HAD A FAILED ATTEMPT TO USE gemini-cli to work on the project, I advise it to revert its changes but I'm unsure if it did. Please review the code base and delete this entry.]
