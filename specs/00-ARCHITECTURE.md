@@ -39,6 +39,7 @@
 2. **No finding without two citations.** Enforced by schema (see `gap_candidates`).
 3. **No person surfaced without HITL approval.** Enforced by the masking rule (§8).
 4. **All tunables live in `config.toml`.** No magic numbers in code.
+5. **No finding surfaced for publication below its calibrated precision bar.** Enforced by the trust gate (gate_tier + the min_tier default in server.py; see specs/EVAL-TRUST-GATE.md). Strictly additive to rule 3 — the gate can only withhold or flag a finding, never unmask a person.
 
 ## 2. Repository layout
 

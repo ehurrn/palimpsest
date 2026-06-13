@@ -70,6 +70,8 @@ def seeded_db(tmp_path_factory):
     extract = "llama"
     classify = "qwen"
     keep_alive = "24h"
+    [eval]
+    gate_enforcement = "annotate"
     [nodes]
     gonktop = []
     """
@@ -205,6 +207,9 @@ def test_tool_find_redaction_gaps(seeded_db):
     assert len(res) == 1
     assert res[0]["gap_id"] == 100
     assert res[0]["clear_entity"]["text"] == "Jane Doe" # Not masked because approved
+    assert res[0]["type_key"] == "type_a"
+    assert res[0]["gate_tier"] == "tentative"
+    assert "confidence" in res[0]
     
     # Check that both citations are present
     assert "citation" in res[0]["redaction"]

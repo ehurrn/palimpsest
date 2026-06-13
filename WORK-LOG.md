@@ -142,3 +142,7 @@
 - Completed task: TASK-16 — Calibration: PAV isotonic + Wilson threshold + artifact
 - Starting task: TASK-17 — Metrics + report (`palimpsest-eval report`)
 - Completed task: TASK-17 — Metrics + report (`palimpsest-eval report`)
+- Starting task: TASK-18 — Trust gate + surfacing-boundary enforcement (Iron Rule #4)
+- Completed task: TASK-18 — Trust gate + surfacing-boundary enforcement (Iron Rule #4)
+- Starting task: TASK-19 — Eval verification run
+

@@ -166,9 +166,9 @@ def get_citation(row: Dict[str, Any], prefix: str) -> Dict[str, Any]:
     }
 
 @mcp.tool()
-def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candidate", kind: str = None, limit: int = 20) -> str:
+def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candidate", kind: str = None, limit: int = 20, min_tier: str = "surfaceable") -> str:
     """List redaction gaps with scores above the threshold and masked person entities."""
-    logger.info(f"Tool call: palimpsest_find_redaction_gaps(min_score={min_score}, status={status!r}, kind={kind!r}, limit={limit})")
+    logger.info(f"Tool call: palimpsest_find_redaction_gaps(min_score={min_score}, status={status!r}, kind={kind!r}, limit={limit}, min_tier={min_tier!r})")
     
     try:
         cfg = load()
@@ -202,6 +202,10 @@ def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candi
         cur = conn.execute(query, params)
         rows = cur.fetchall()
         approved_ids = load_approved_person_ids(conn)
+
+        from palimpsest.eval.gate import load_artifact, apply_gate
+        _artifact = load_artifact(cfg)
+        _enforcement = (getattr(cfg, "eval", {}) or {}).get("gate_enforcement", "enforce")
 
         results = []
         for row in rows:
@@ -237,6 +241,7 @@ def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candi
             results.append({
                 "gap_id": row["gap_id"],
                 "score": row["score"],
+                "type_key": "type_b" if row["e_kind"] == "dosage" else "type_a",
                 "score_components": {
                     "cosine": row["score_cosine"],
                     "anchor": row["score_anchor"],
@@ -260,6 +265,7 @@ def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candi
                 "requires_review": row["e_kind"] == "person" and masked_text.startswith("PERSON-")
             })
             
+        results = apply_gate(results, _artifact, min_tier=min_tier, enforcement=_enforcement)
         conn.close()
         logger.info(f"Returned {len(results)} gap candidates.")
         return json.dumps(results, indent=2)
@@ -303,8 +309,8 @@ def palimpsest_search(query: str, limit: int = 10) -> str:
     norms = np.linalg.norm(query_vec, axis=1, keepdims=True)
     query_vec = np.where(norms > 0, query_vec / norms, query_vec)
     
-    D, I = index.search(query_vec, limit)
-    hit_chunk_ids = [int(cid) for cid in I[0] if cid != -1]
+    D, indices = index.search(query_vec, limit)
+    hit_chunk_ids = [int(cid) for cid in indices[0] if cid != -1]
     
     if not hit_chunk_ids:
         conn.close()
@@ -328,7 +334,7 @@ def palimpsest_search(query: str, limit: int = 10) -> str:
         approved_ids = load_approved_person_ids(conn)
 
         results = []
-        for idx, cid in enumerate(I[0]):
+        for idx, cid in enumerate(indices[0]):
             if cid == -1 or cid not in row_map:
                 continue
             row = row_map[cid]
