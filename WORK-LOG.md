@@ -1,6 +1,12 @@
 # Work Log
 
 ## 2026-06-12
+- Completed Task 8: MCP Server (read-only, gonktop).
+  - Implemented `palimpsest/server.py` using FastMCP, exposing read-only tools: `palimpsest_find_redaction_gaps`, `palimpsest_search`, `palimpsest_get_document`, `palimpsest_get_entity`, `palimpsest_queue_status`, and `palimpsest_review_queue`.
+  - Implemented complete person masking logic across all tool responses, pseudonymizing non-approved persons while allowing approved deceased_historical ones.
+  - Ensured the server opens the database in read-only mode and blocks all mutations.
+  - Wrote and passed comprehensive unit tests in `tests/test_server.py` verifying read-only safety, masking logic inside texts, and proper citation outputs.
+
 - Completed Task 7: Embeddings, Index, and the Redaction-Gap Join.
   - Implemented `palimpsest/tasks/embed.py` with `@handler("embed")` for text chunking and sequential batch embedding via local Ollama.
   - Implemented `palimpsest/indexer.py` with `build`, `gapjoin`, and `stats` CLI subcommands.

@@ -15,7 +15,8 @@ dependencies = [
     "numpy",
     "pymupdf",
     "pillow",
-    "faiss-cpu"
+    "faiss-cpu",
+    "mcp"
 ]
 
 [tool.pytest.ini_options]
