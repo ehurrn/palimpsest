@@ -1,6 +1,7 @@
 # Work Log
 
 ## 2026-06-13
+- Completed task: Created AGENTS.md instructing Jules to work persistently, log blockers to HUMAN_DO_THIS.md, and continue unbothered.
 - Phase 3 COMPLETE. indexer.py thinned (1071 → 584 lines): run_violation/series/outcome/identity_link replaced with scorer delegates. pyproject.toml [project.scripts] entry points added for all 4 CLI tools. 150 tests green. Committed 367c830.
 - Phase 3 scorer registry complete (solo — agy). Created palimpsest/scorers/ package: base.py (Candidate, Scorer), __init__.py (SCORERS registry), type_c/d/e/f.py extracted from indexer.py. Added type_key + top() to all scorers. Added Config.orchestrator field. Fixed test_ocr.py fixture. Committed orchestrator.py from prior agent. 150 tests green. Pushed to main.
 - Phase 3 implementation resumed (solo — agy). Mesh agents previously wrote type_a.py, type_b.py, and six scorer test files but left base.py, __init__.py, type_c.py, type_d.py, type_e.py, type_f.py missing. Config orchestrator field, pyproject entry points, and orchestrator.py also remain incomplete. Starting now with base.py + __init__.py to unblock failing tests.
