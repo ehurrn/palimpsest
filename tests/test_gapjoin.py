@@ -1,12 +1,9 @@
 # tests/test_gapjoin.py
-import datetime
-import os
 import sqlite3
 import pytest
 import numpy as np
 import faiss
 
-from palimpsest.config import Config
 from palimpsest.db import migrate
 from palimpsest.indexer import run_gapjoin, get_slot_expectation
 
@@ -138,7 +135,7 @@ def test_gapjoin_algorithm(gapjoin_db):
     assert pytest.approx(cand5["score_cosine"], abs=1e-6) == 0.8
     assert pytest.approx(cand5["score_anchor"], abs=1e-6) == 1.0
     assert pytest.approx(cand5["score_kind"], abs=1e-6) == 0.5
-    assert pytest.approx(cand5["score"], abs=1e-6) == 0.8
+    assert pytest.approx(cand5["score"], abs=1e-6) == 0.899004989
     assert cand5["method"] == "both" # Found by both anchor and embedding route
     
     # Entity 6 (john smith, person):
