@@ -140,3 +140,5 @@
 - Completed task: TASK-15 — Eval runner + `palimpsest-eval` CLI
 - Starting task: TASK-16 — Calibration: PAV isotonic + Wilson threshold + artifact
 - Completed task: TASK-16 — Calibration: PAV isotonic + Wilson threshold + artifact
+- Starting task: TASK-17 — Metrics + report (`palimpsest-eval report`)
+- Completed task: TASK-17 — Metrics + report (`palimpsest-eval report`)
