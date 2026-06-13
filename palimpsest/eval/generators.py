@@ -136,3 +136,57 @@ def gen_type_b_cases(n_per_kind: int = 5, seed: int = 1337) -> list[Case]:
             dose = _DOSES[i % len(_DOSES)]
             cases.append(_ab_case(f"b_{kind}_{i}", kind, dose, "dosage"))
     return cases
+
+
+_ORGS = ["los alamos", "oak ridge", "hanford", "sandia", "argonne"]
+_PERSONS_C = ["john smith", "robert hale", "edward grant", "alice brenner", "frank doyle"]
+
+
+def _named_page(doc_id, person_norm, org_norm, year):
+    page = _segments_to_page(doc_id, 1, [
+        {"kind": "person", "text": person_norm.title(), "norm": person_norm},
+        "of", {"kind": "org", "text": org_norm.title(), "norm": org_norm},
+        "examined; dose", {"kind": "dosage", "text": "15 rem", "norm": "15 rem"}, "recorded.",
+    ])
+    return page, Doc(doc_id, year=year)
+
+
+def _c_case(uid, kind, org, year, person_true, person_decoy):
+    s_doc = f"{uid}_S"
+    s_page = _segments_to_page(s_doc, 1, [
+        "Examination of", {"kind": "subject_ref", "text": "Subject 3", "norm": "subject 3"},
+        "at", {"kind": "org", "text": org.title(), "norm": org},
+        "in", {"kind": "date", "text": str(year), "norm": str(year)},
+        "received", {"kind": "dosage", "text": "15 rem", "norm": "15 rem"}, "total.",
+    ])
+    pages = [s_page]
+    docs = [Doc(s_doc, year=year)]
+    truth = {"true_named_norm": None}
+
+    if kind in ("positive", "hard_negative"):
+        pg, dc = _named_page(f"{uid}_P", person_true, org, year)
+        pages.append(pg)
+        docs.append(dc)
+        truth = {"true_named_norm": person_true}
+    if kind in ("hard_negative", "negative_control"):
+        pg, dc = _named_page(f"{uid}_D", person_decoy, org, year)
+        pages.append(pg)
+        docs.append(dc)
+
+    return Case(case_uid=uid, type_key="type_c", case_kind=kind,
+                docs=docs, pages=pages, truth=truth)
+
+
+def gen_type_c_cases(n_per_kind: int = 5, seed: int = 1337) -> list[Case]:
+    cases: list[Case] = []
+    gi = 0
+    for kind in ("positive", "negative_control", "hard_negative"):
+        for i in range(n_per_kind):
+            org = _ORGS[i % len(_ORGS)]
+            year = 1950 + 3 * gi          # unique per case, ≥3 apart → no cross-case linking
+            person_true = _PERSONS_C[i % len(_PERSONS_C)]
+            person_decoy = _PERSONS_C[(i + 1) % len(_PERSONS_C)]
+            cases.append(_c_case(f"c_{kind}_{i}", kind, org, year, person_true, person_decoy))
+            gi += 1
+    return cases
+
