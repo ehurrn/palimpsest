@@ -9,7 +9,11 @@ dependencies = [
     "httpx",
     "beautifulsoup4",
     "pytest",
-    "tomli; python_version < '3.12'"
+    "tomli; python_version < '3.12'",
+    "pymupdf>=1.27.2.3",
+    "pillow>=12.2.0",
+    "pytesseract>=0.3.13",
+    "ocrmac>=1.0.1",
 ]
 
 [tool.pytest.ini_options]
