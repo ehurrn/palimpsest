@@ -7,6 +7,9 @@ venv/
 # Local working / tmp directory
 working/
 
+# Machine-local config (copy config.toml.example and edit for each host)
+config.toml
+
 # Python caches
 __pycache__/
 *.pyc

@@ -1,5 +1,5 @@
 [storage]
-root = "/Users/herren/dev/palimpsest/working"
+root = "/path/to/palimpsest-data"
 
 [db]
 path = "{storage.root}/db/palimpsest.db"
