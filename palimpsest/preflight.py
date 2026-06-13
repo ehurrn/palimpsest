@@ -85,18 +85,16 @@ def check_db(cfg) -> bool:
     """DB migrated at current schema_version (2)."""
     EXPECTED_VERSION = 2
     try:
-        from palimpsest.db import connect, migrate
-        # Run migrate to create tables if they don't exist yet
-        migrate(cfg)
+        from palimpsest.db import connect
         conn = connect(cfg)
         cur = conn.execute("SELECT MAX(version) FROM schema_version")
         row = cur.fetchone()
         conn.close()
         if row is None or row[0] is None:
-            return _fail("DB schema_version", "schema_version table is empty")
+            return _fail("DB schema_version", "schema_version table is empty — run: python -m palimpsest.db migrate")
         version = row[0]
         if version < EXPECTED_VERSION:
-            return _fail("DB schema_version", f"got {version}, need {EXPECTED_VERSION}")
+            return _fail("DB schema_version", f"got {version}, need {EXPECTED_VERSION} — run: python -m palimpsest.db migrate")
         return _pass(f"DB migrated (schema_version={version})")
     except Exception as exc:
         return _fail("DB migrated", str(exc))

@@ -5,7 +5,7 @@ root = "/Users/herren/dev/palimpsest/working"
 path = "{storage.root}/db/palimpsest.db"
 
 [broker]
-host = "localhost"
+host = "192.168.0.58"
 port = 8077
 lease_ttl_seconds = 900
 heartbeat_seconds = 120
@@ -35,7 +35,7 @@ blackbox_max_area_frac = 0.25
 blackbox_darkness_threshold = 60
 
 [embed]
-model = "nomic-embed"
+model = "nomic-embed-text"
 dim = 768
 chunk_chars = 800
 chunk_overlap = 150
@@ -48,10 +48,11 @@ w_kind = 0.2
 topk_embedding_candidates = 50
 
 [models]
-extract = "llama"
-classify = "qwen"
+extract = "llama3.1:8b"
+classify = "qwen2.5:3b"
 keep_alive = "24h"
 
 [nodes]
 gonktop = ["ocr", "features", "embed", "gapjoin"]
-m4 = ["ocr", "features", "embed"]
+m4 = ["ocr", "features", "classify"]
+m5 = ["extract", "ocr", "features", "embed"]

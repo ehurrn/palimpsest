@@ -1,6 +1,14 @@
 # Work Log
 
 ## 2026-06-12
+- Completed Phase-1 Verification run. Configured and started local M4 worker and remote M5 worker. Excluded `embed` capability from M4 due to a local Ollama 500 error, assigning it to M5 and gonktop. Prioritized features/embed jobs (priority=3) to drain the queue. Processed 534/1000 documents (6208 pages), built index with 1212 vectors, and generated 1107 gap candidates. Documented two high-confidence Common Rule de-redactions in reports/phase1-verification.md.
+- Resuming Task 10 pilot run. Verified local environment passing all tests. Ready to launch local M4 worker and check on progress.
+- Pilot run complete (16/37 docs through full pipeline). Fixed `Callable` import bug in indexer.py. 21 docs dead on OCR — tesseract not installed on gonktop (see HUMAN_DO_THIS.md). FAISS index built with 524 vectors, 11 redactions joined, 0 gap candidates above threshold (expected at this corpus size). Worker running on gonktop, broker live at 192.168.0.58:8077.
+- Completed deploy/ documentation: GONKTOP-SETUP.md ops runbook + broker/server launchd plists.
+  - Wrote `deploy/GONKTOP-SETUP.md` with 9-section runbook covering clone, venv, spaCy, config, DB migrate, launchd install, preflight, logs, and troubleshooting.
+  - Wrote `deploy/com.palimpsest.broker.plist` (uvicorn on port 8077, logs to /tmp/palimpsest-broker.log, keep-alive).
+  - Wrote `deploy/com.palimpsest.server.plist` (FastMCP on port 8078, logs to /tmp/palimpsest-server.log, keep-alive).
+- Starting deploy/ documentation: GONKTOP-SETUP.md ops runbook + broker/server launchd plists.
 - Completed Task 10: Phase-1 Verification Run scaffolding.
   - Wrote `palimpsest/preflight.py` with 8 checks: config loads, storage mounted+writable+≥200GB, DB migrated at schema_version 2, broker reachable, worker heartbeat, Ollama embed model warm latency <3s, spaCy en_core_web_sm, FAISS index.
   - Wrote `reports/phase1-verification.md` template with all 5 required sections (preflight output, pilot run, full slice, gap candidate review, kill-or-scale recommendation).

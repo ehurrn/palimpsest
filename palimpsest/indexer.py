@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Set
+from typing import Callable, List, Dict, Any, Tuple, Set
 import faiss
 import numpy as np
 import httpx
