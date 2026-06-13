@@ -274,8 +274,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OpenNet Harvester CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
     
-    catalog_parser = subparsers.add_parser("catalog", help="Catalog NV slice from search results")
-    catalog_parser.add_argument("--query", type=str, default="NV*", help="Search query (ignored, prefix used from config)")
+    catalog_parser = subparsers.add_parser("catalog", help="Catalog NV* docs from OpenNet (accession prefix from config.toml)")
     catalog_parser.add_argument("--limit", type=int, default=None, help="Max results to catalog")
     
     fetch_parser = subparsers.add_parser("fetch", help="Download raw PDFs for cataloged documents")
