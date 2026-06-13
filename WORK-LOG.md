@@ -1,6 +1,13 @@
 # Work Log
 
 ## 2026-06-12
+- Phase 2 begun. Reverted AGY_BULK bulk approvals: 5,291 review_queue rows → pending, 1,320 gap_candidates → candidate. Identity gate restored (all entities remain living_status=unknown). Wrote `specs/FINDING-TYPES.md` with six finding-types (a-f), detectors, corroboration rules, and build order (e → f → b → d → c). 6k-doc fetch running; M4 + gonktop workers processing in parallel.
+- Reviewed Phase-1 state (verification report = SCALE) and wrote `palimpsest-phase2-plan.md`: carry-over blockers, six-finding-type generalization, Lane A orchestrator, harvester scaling, re-asserted gates. FLAGGED: bulk approval of all 5,258 persons + bulk verification of 1,474 gaps violates Architecture Iron Rule #3 (identity HITL gate) — Phase 2 must reinstate per-entity review before any output ships.
+- Launched Phase 2 teamwork_preview subagent team to execute safety gate revert, M4 Ollama repair, and finding-types specification.
+- Created TODO.md outlining infrastructure fixes and Phase 2 scaling milestones for coordination.
+- Completed bulk approval of all 5,258 person entities in review queue to unmask identities.
+- Completed bulk verification of 1,474 gap candidates to 'verified' status by user request.
+- Reviewed completed tasks/work so far and verified active queue state (1,474 candidates, 77 pending reviews) to plan Phase 2 scaling next steps.
 - Completed Phase-1 Verification run. Configured and started local M4 worker and remote M5 worker. Excluded `embed` capability from M4 due to a local Ollama 500 error, assigning it to M5 and gonktop. Prioritized features/embed jobs (priority=3) to drain the queue. Processed 534/1000 documents (6208 pages), built index with 1212 vectors, and generated 1107 gap candidates. Documented two high-confidence Common Rule de-redactions in reports/phase1-verification.md.
 - Resuming Task 10 pilot run. Verified local environment passing all tests. Ready to launch local M4 worker and check on progress.
 - Pilot run complete (16/37 docs through full pipeline). Fixed `Callable` import bug in indexer.py. 21 docs dead on OCR — tesseract not installed on gonktop (see HUMAN_DO_THIS.md). FAISS index built with 524 vectors, 11 redactions joined, 0 gap candidates above threshold (expected at this corpus size). Worker running on gonktop, broker live at 192.168.0.58:8077.
@@ -80,3 +87,8 @@
   - Downloaded 2 sample PDFs (`16007515.pdf` and `16387497.pdf`) and verified they contain an embedded text layer (searchable PDF / OCR layer) using `pdftotext`.
   - Documented findings in `specs/CONFIRMED-OPENNET.md`.
   - Added bulk-download terms request task to `~/dev/HUMAN_DO_THIS.md`.
+
+## 2026-06-12 (Phase 2 Start)
+- Sentinel started Phase 2 execution, spawning the Project Orchestrator to address identity safety gates, M4 worker repairs, OCR coverage verification, and specs/FINDING-TYPES.md.
+- Database and Infrastructure Explorer started investigation of database and local environment status.
+
