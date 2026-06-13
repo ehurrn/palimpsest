@@ -12,6 +12,54 @@ from palimpsest.tasks import handler, PermanentJobError
 
 logger = logging.getLogger(__name__)
 
+# Person entity quality filters
+PERSON_STOPLIST = frozenset({
+    "common rule", "subpart", "discussion", "purchase orders", "contractor",
+    "public law", "department", "speaker", "order", "sec", "serve", "refer",
+    "funding", "title", "section", "chapter", "article", "paragraph",
+    "government", "agency", "committee", "board", "office", "bureau",
+    "administration", "institute", "center", "laboratory", "division",
+    "program", "project", "study", "report", "analysis", "review",
+    "act", "code", "rule", "law", "regulation", "policy", "procedure",
+})
+
+_DIGIT_BRACKET_RE = re.compile(r'[\d\(\)\[\]@]')
+
+def _is_valid_person(text: str) -> bool:
+    """Return False if this PERSON entity is likely a NER false positive."""
+    stripped = text.strip()
+    alpha_chars = sum(c.isalpha() for c in stripped)
+    if alpha_chars < 3:
+        return False
+    if _DIGIT_BRACKET_RE.search(stripped):
+        return False
+    # Reject OCR garbage with too much punctuation / whitespace
+    if alpha_chars / max(len(stripped), 1) < 0.6:
+        return False
+    norm = " ".join(stripped.lower().split())
+    if norm in PERSON_STOPLIST:
+        return False
+    for term in PERSON_STOPLIST:
+        if norm.startswith(term):
+            return False
+    # Single all-lowercase short token is not a name
+    tokens = stripped.split()
+    if len(tokens) == 1 and stripped.islower() and len(stripped) < 8:
+        return False
+    return True
+
+_VOWEL_RE = re.compile(r'[aeiouAEIOU]')
+
+def _page_ocr_quality(page_lines: list) -> float:
+    """Fraction of whitespace-delimited tokens that contain a vowel.
+
+    Pages below ~0.5 are likely garbled tesseract output and should skip NER.
+    """
+    tokens = [t for line in page_lines for t in line["text"].split() if t]
+    if not tokens:
+        return 1.0
+    return sum(1 for t in tokens if _VOWEL_RE.search(t)) / len(tokens)
+
 # Compile regexes once at module level
 EXEMPTION_STAMP_PATTERNS = [
     re.compile(r'\(\s*b\s*\)\s*\(\s*([1-9])\s*\)', re.IGNORECASE),
@@ -419,59 +467,66 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
         # Add regex entities to final page entities list
         page_entities = list(regex_entities)
         
-        # spaCy NER extraction
-        try:
-            nlp = get_nlp()
-            doc = nlp(page_text)
-            
-            for ent in doc.ents:
-                spacy_kind = None
-                if ent.label_ == "PERSON":
-                    spacy_kind = "person"
-                elif ent.label_ == "DATE":
-                    spacy_kind = "date"
-                elif ent.label_ in ("GPE", "LOC"):
-                    spacy_kind = "location"
-                elif ent.label_ == "ORG":
-                    spacy_kind = "org"
-                    
-                if spacy_kind is None:
-                    continue
-                    
-                char_start = ent.start_char
-                char_end = ent.end_char
-                text = ent.text
-                
-                # Check overlap with regex entities
-                overlap = False
-                for r_ent in regex_entities:
-                    if char_start < r_ent["char_end"] and r_ent["char_start"] < char_end:
-                        overlap = True
-                        break
-                        
-                if not overlap:
-                    norm = normalize(spacy_kind, text)
-                    bbox = [0.0, 0.0, 1.0, 1.0]
-                    for start, end, b in line_offsets:
-                        if start <= char_start <= end:
-                            bbox = b
+        # spaCy NER extraction — skip on garbled OCR pages
+        ocr_quality = _page_ocr_quality(page_lines)
+        if ocr_quality < 0.5:
+            logger.debug(f"Page {page_no}: skipping NER (OCR quality {ocr_quality:.2f})")
+        else:
+            try:
+                nlp = get_nlp()
+                doc = nlp(page_text)
+
+                for ent in doc.ents:
+                    spacy_kind = None
+                    if ent.label_ == "PERSON":
+                        spacy_kind = "person"
+                    elif ent.label_ == "DATE":
+                        spacy_kind = "date"
+                    elif ent.label_ in ("GPE", "LOC"):
+                        spacy_kind = "location"
+                    elif ent.label_ == "ORG":
+                        spacy_kind = "org"
+
+                    if spacy_kind is None:
+                        continue
+
+                    char_start = ent.start_char
+                    char_end = ent.end_char
+                    text = ent.text
+
+                    if spacy_kind == "person" and not _is_valid_person(text):
+                        continue
+
+                    # Check overlap with regex entities
+                    overlap = False
+                    for r_ent in regex_entities:
+                        if char_start < r_ent["char_end"] and r_ent["char_start"] < char_end:
+                            overlap = True
                             break
-                            
-                    entity_dict = {
-                        "page_no": page_no,
-                        "kind": spacy_kind,
-                        "text": text,
-                        "norm": norm,
-                        "char_start": char_start,
-                        "char_end": char_end,
-                        "bbox": bbox
-                    }
-                    if spacy_kind == "person":
-                        entity_dict["living_status"] = "unknown"
-                        
-                    page_entities.append(entity_dict)
-        except Exception as e:
-            logger.error(f"spaCy NER failed on page {page_no}: {e}")
+
+                    if not overlap:
+                        norm = normalize(spacy_kind, text)
+                        bbox = [0.0, 0.0, 1.0, 1.0]
+                        for start, end, b in line_offsets:
+                            if start <= char_start <= end:
+                                bbox = b
+                                break
+
+                        entity_dict = {
+                            "page_no": page_no,
+                            "kind": spacy_kind,
+                            "text": text,
+                            "norm": norm,
+                            "char_start": char_start,
+                            "char_end": char_end,
+                            "bbox": bbox
+                        }
+                        if spacy_kind == "person":
+                            entity_dict["living_status"] = "unknown"
+
+                        page_entities.append(entity_dict)
+            except Exception as e:
+                logger.error(f"spaCy NER failed on page {page_no}: {e}")
             
         entities.extend(page_entities)
         
