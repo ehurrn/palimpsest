@@ -9,11 +9,9 @@ import numpy as np
 import httpx
 
 import math
-import re
 from collections import defaultdict
 from palimpsest.config import load, Config
 from palimpsest.db import connect
-from palimpsest.tasks.features import normalize
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -495,550 +493,65 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
             
     logger.info("Redaction-gap join run completed.")
 
-def run_violation_join(cfg: Config):
-    """Type-e detector: find pages citing a regulation and score them as violation candidates.
 
-    Scoring: the document year is compared to the regulation's effective_date.
-    - Temporal violation (doc date < reg effective date): score = 0.70 base.
-    - Each additional corroborating reg_cite entity on the same page: +0.10 (cap 0.95).
-    Candidates at or above score_threshold go into violation_candidates.
+def run_violation_join(cfg: Config) -> None:
+    """Type-e detector — delegate to TypeEScorer.
+
+    Kept here for backward-compat CLI (`palimpsest-index violationjoin`).
     """
+    from palimpsest.scorers.type_e import TypeEScorer
     conn = connect(cfg)
-    threshold = float(cfg.gapjoin.get("score_threshold", 0.65))
-
-    # Load all regulations with their effective year
-    regs: dict[int, dict] = {
-        int(row["reg_id"]): {
-            "citation": str(row["citation"]),
-            "effective_date": row["effective_date"],
-            "effective_year": int(str(row["effective_date"])[:4]) if row["effective_date"] else None,
-        }
-        for row in conn.execute("SELECT reg_id, citation, effective_date FROM regulation_citations").fetchall()
-    }
-
-    if not regs:
-        logger.warning("No regulations seeded — run db.py migrate first")
-        return
-
-    # Fetch all reg_cite entities, joined to their document year
-    rows = conn.execute("""
-        SELECT e.entity_id, e.doc_id, e.page_no, e.norm, d.year AS doc_year
-        FROM entities e
-        JOIN documents d ON e.doc_id = d.doc_id
-        WHERE e.kind = 'reg_cite'
-    """).fetchall()
-
-    inserted = 0
-    for row in rows:
-        entity_id = row["entity_id"]
-        doc_id = row["doc_id"]
-        page_no = row["page_no"]
-        doc_year = row["doc_year"]
-        cite_norm = row["norm"]
-
-        # Match this norm to a seeded regulation
-        matched_reg_id = None
-        for reg_id, reg in regs.items():
-            if reg["citation"].lower() in cite_norm.lower() or cite_norm.lower() in reg["citation"].lower():
-                matched_reg_id = reg_id
-                break
-
-        if matched_reg_id is None:
-            continue
-
-        reg = regs[matched_reg_id]
-        reg_year = reg["effective_year"]
-
-        # Temporal scoring
-        if doc_year and reg_year and doc_year < reg_year:
-            base_score = 0.70
-            violation_type = "pre_regulation"
-        else:
-            base_score = 0.65
-            violation_type = "possible_violation"
-
-        # Count corroborating reg_cite entities on the same page
-        corroborating = conn.execute("""
-            SELECT COUNT(*) FROM entities
-            WHERE doc_id = ? AND page_no = ? AND kind = 'reg_cite' AND entity_id != ?
-        """, (doc_id, page_no, entity_id)).fetchone()[0]
-        score = min(base_score + corroborating * 0.10, 0.95)
-
-        if score < threshold:
-            continue
-
-        with conn:
-            conn.execute("""
-                INSERT OR IGNORE INTO violation_candidates
-                  (doc_id, page_no, reg_id, reg_cite_entity_id, doc_year, violation_type, score, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate')
-            """, (doc_id, page_no, matched_reg_id, entity_id, doc_year, violation_type, score))
-            if conn.execute("SELECT changes()").fetchone()[0]:
-                inserted += 1
-
-    logger.info(f"Violation join complete: {inserted} new candidates (threshold={threshold})")
+    try:
+        TypeEScorer().run(conn, cfg)
+    finally:
+        conn.close()
 
 
-def run_series_join(cfg: Config):
-    """Run series gap join analysis (Type f)."""
+def run_series_join(cfg: Config) -> None:
+    """Type-f detector — delegate to TypeFScorer.
+
+    Kept here for backward-compat CLI (`palimpsest-index seriesjoin`).
+    """
+    from palimpsest.scorers.type_f import TypeFScorer
     conn = connect(cfg)
-    
-    # 1. Parse accessions from documents table
-    cur = conn.execute("SELECT doc_id, accession FROM documents WHERE accession IS NOT NULL AND accession != ''")
-    rows = cur.fetchall()
-    
-    # Group accessions by prefix
-    # prefix -> list of (num, doc_id, padding_len, accession_str)
-    groups = defaultdict(list)
-    
-    for row in rows:
-        doc_id = row["doc_id"]
-        acc = row["accession"]
-        # Split into prefix and number
-        m = re.match(r'^([^\d]+)(\d+)$', acc.strip())
-        if m:
-            prefix = m.group(1)
-            digits_str = m.group(2)
-            num = int(digits_str)
-            padding_len = len(digits_str)
-            groups[prefix].append((num, doc_id, padding_len, acc))
-            
-    inserted = 0
-    for prefix, accs in groups.items():
-        if not accs:
-            continue
-        # Sort by number
-        accs.sort(key=lambda x: x[0])
-        present_nums = [x[0] for x in accs]
-        present_set = set(present_nums)
-        
-        # Mapping from number to (doc_id, accession_str, padding_len)
-        num_map = {num: (doc_id, acc, pad_len) for num, doc_id, pad_len, acc in accs}
-        
-        min_num = min(present_set)
-        max_num = max(present_set)
-        total_range_count = max_num - min_num + 1
-        
-        if total_range_count <= 1:
-            continue
-            
-        missing_count = total_range_count - len(present_set)
-        gap_ratio = missing_count / total_range_count
-        
-        # Only process if gap ratio > 20%
-        if gap_ratio <= 0.20:
-            continue
-            
-        # Standard padding_len to use if we need to format missing accession
-        # Let's use the padding_len of the first document in the group
-        default_pad = accs[0][2]
-        
-        # Identify missing numbers in the range
-        for num in range(min_num + 1, max_num):
-            if num in present_set:
-                continue
-                
-            # Form missing accession
-            missing_acc = f"{prefix}{num:0{default_pad}d}"
-            norm_missing_acc = normalize("seq_ref", missing_acc)
-            
-            # Check flanking documents (N-1 or N+1 sequence)
-            doc_id_prev = num_map.get(num - 1, [None])[0] if (num - 1) in present_set else None
-            doc_id_next = num_map.get(num + 1, [None])[0] if (num + 1) in present_set else None
-            
-            ref_prev = False
-            entity_id_prev = None
-            if doc_id_prev:
-                cur_ent = conn.execute(
-                    "SELECT entity_id FROM entities WHERE doc_id = ? AND kind = 'seq_ref' AND norm = ? LIMIT 1",
-                    (doc_id_prev, norm_missing_acc)
-                )
-                ent_row = cur_ent.fetchone()
-                if ent_row:
-                    ref_prev = True
-                    entity_id_prev = ent_row["entity_id"]
-                    
-            ref_next = False
-            entity_id_next = None
-            if doc_id_next:
-                cur_ent = conn.execute(
-                    "SELECT entity_id FROM entities WHERE doc_id = ? AND kind = 'seq_ref' AND norm = ? LIMIT 1",
-                    (doc_id_next, norm_missing_acc)
-                )
-                ent_row = cur_ent.fetchone()
-                if ent_row:
-                    ref_next = True
-                    entity_id_next = ent_row["entity_id"]
-                    
-            # Compute score
-            if ref_prev and ref_next:
-                score = 0.90
-            elif ref_prev or ref_next:
-                score = 0.70
-            else:
-                score = 0.50
-                
-            if score >= 0.65:
-                # Flanking doc ID and entity ID to reference
-                flanking_doc_id = doc_id_prev if ref_prev else doc_id_next
-                ref_entity_id = entity_id_prev if ref_prev else entity_id_next
-                
-                with conn:
-                    conn.execute("""
-                        INSERT INTO series_gap_candidates 
-                          (series_prefix, missing_number, missing_accession, flanking_doc_id, ref_entity_id, score, status)
-                        VALUES (?, ?, ?, ?, ?, ?, 'candidate')
-                        ON CONFLICT(missing_accession) DO UPDATE SET
-                          score = excluded.score,
-                          flanking_doc_id = excluded.flanking_doc_id,
-                          ref_entity_id = excluded.ref_entity_id
-                    """, (prefix, num, missing_acc, flanking_doc_id, ref_entity_id, score))
-                    if conn.execute("SELECT changes()").fetchone()[0]:
-                        inserted += 1
-                        
-    logger.info(f"Series join complete: {inserted} new series gap candidates")
+    try:
+        TypeFScorer().run(conn, cfg)
+    finally:
+        conn.close()
 
 
 def run_outcome_gap(cfg: Config) -> None:
-    """Type-d detector: protocol_code in initiation doc with no outcome doc.
+    """Type-d detector — delegate to TypeDScorer.
 
-    An initiation doc is one that contains a protocol_code entity AND a date
-    entity on the same page. An outcome doc is one that contains an outcome_ref
-    entity whose norm starts with 'outcome_ind:' (i.e. outcome-indicator terms
-    like "mortality", "follow-up results"). Documents containing only 'future_ref:'
-    outcome_ref entities (e.g. "to be submitted") do NOT satisfy the outcome-present
-    condition — they are corroboration signals in initiation docs, not outcome docs.
-
-    Scoring:
-    - 0.70 base: initiation doc exists, no outcome doc found.
-    - +0.15 bonus: initiation doc has a future_ref outcome_ref entity.
-    - +0.10 bonus: current year is beyond start_year + 5 (overdue per IRB norms).
-    Candidates at or above score_threshold are stored in outcome_gap_candidates.
+    Kept here for backward-compat CLI (`palimpsest-index outcomegap`).
     """
+    from palimpsest.scorers.type_d import TypeDScorer
     conn = connect(cfg)
-    threshold = float(cfg.gapjoin.get("score_threshold", 0.65))
-    current_year = int(datetime.datetime.now().year)
-
-    # One row per (pc_norm, doc_id) pair — deduplicated at SQL level
-    rows = conn.execute("""
-        SELECT e.norm AS pc_norm, e.doc_id, d.year AS doc_year
-        FROM entities e
-        JOIN documents d ON e.doc_id = d.doc_id
-        WHERE e.kind = 'protocol_code'
-        GROUP BY e.norm, e.doc_id
-    """).fetchall()
-
-    if not rows:
-        logger.info("No protocol_code entities found — skipping outcome gap join.")
-        return
-
-    # Group by protocol_code norm
-    pc_docs: dict[str, list[dict]] = defaultdict(list)
-    for row in rows:
-        pc_docs[str(row["pc_norm"])].append({
-            "doc_id": str(row["doc_id"]),
-            "doc_year": row["doc_year"],
-        })
-
-    inserted = 0
-    for pc_norm, doc_entries in pc_docs.items():
-        # Docs that contain this protocol_code AND have a date entity (initiation signal)
-        initiation_entries = []
-        for entry in doc_entries:
-            date_check = conn.execute(
-                "SELECT 1 FROM entities WHERE doc_id = ? AND kind = 'date' LIMIT 1",
-                (entry["doc_id"],)
-            ).fetchone()
-            if date_check:
-                initiation_entries.append(entry)
-
-        if not initiation_entries:
-            continue
-
-        # Check if ANY doc with this protocol_code has an outcome_ref with "outcome_ind:" prefix
-        outcome_docs = conn.execute("""
-            SELECT COUNT(*) FROM entities e2
-            WHERE e2.kind = 'outcome_ref'
-              AND e2.norm LIKE 'outcome_ind:%'
-              AND e2.doc_id IN (
-                  SELECT doc_id FROM entities
-                  WHERE kind = 'protocol_code' AND norm = ?
-              )
-        """, (pc_norm,)).fetchone()
-
-        has_outcome_doc = outcome_docs is not None and outcome_docs[0] > 0
-        if has_outcome_doc:
-            continue
-
-        for entry in initiation_entries:
-            doc_id = entry["doc_id"]
-            start_year = entry["doc_year"]
-
-            future_ref_row = conn.execute("""
-                SELECT entity_id FROM entities
-                WHERE doc_id = ? AND kind = 'outcome_ref' AND norm LIKE 'future_ref:%'
-                LIMIT 1
-            """, (doc_id,)).fetchone()
-            future_ref_entity_id = future_ref_row["entity_id"] if future_ref_row else None
-
-            score = 0.70
-            if future_ref_entity_id is not None:
-                score += 0.15
-            if start_year is not None and current_year > start_year + 5:
-                score += 0.10
-            score = min(score, 0.95)
-
-            if score >= threshold:
-                with conn:
-                    conn.execute("""
-                        INSERT OR IGNORE INTO outcome_gap_candidates
-                          (protocol_code, initiation_doc_id, start_year, future_ref_entity_id, score)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (pc_norm, doc_id, start_year, future_ref_entity_id, score))
-                    if conn.execute("SELECT changes()").fetchone()[0]:
-                        inserted += 1
-
-    logger.info(f"Outcome gap join complete: {inserted} candidates inserted.")
+    try:
+        TypeDScorer().run(conn, cfg)
+    finally:
+        conn.close()
 
 
-def _edit_distance(a: str, b: str) -> int:
-    """Compute Levenshtein edit distance between two strings (case-insensitive)."""
-    a, b = a.lower(), b.lower()
-    if a == b:
-        return 0
-    if len(a) < len(b):
-        a, b = b, a
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        curr = [i]
-        for j, cb in enumerate(b, 1):
-            curr.append(min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (ca != cb)))
-        prev = curr
-    return prev[-1]
+# _edit_distance moved to palimpsest/scorers/type_c.py
+from palimpsest.scorers.type_c import _edit_distance  # noqa: F401  (re-exported for tests)
 
 
 def run_identity_link(cfg: Config) -> None:
-    """Type-c detector: link anonymous subject_ref pages to named-person pages.
+    """Type-c detector — delegate to TypeCScorer.
 
-    A subject page qualifies if it contains a subject_ref entity AND at least
-    one of: org, date, dosage entity on the same page.  For each such page we
-    compare against every named-person page (person entity) in the database.
-
-    Scoring formula:
-        org_match       = 1.0 if edit_distance(org_a, org_b) <= 2 else 0.0
-        date_proximity  = max(0, 1 - abs(year_a - year_b) / 3.0)
-        dosage_bonus    = 0.2 if both pages share a normalized dosage value else 0.0
-        score           = org_match * 0.5 + date_proximity * 0.3 + dosage_bonus * 0.2
-
-    Minimum score threshold: 0.65 (from cfg.gapjoin.score_threshold).
-
-    IDENTITY GATE: The linkage is stored but only surfaced via `review links`
-    after the named person entity has status='approved' AND
-    living_status='deceased_historical' in review_queue.
+    Kept here for backward-compat CLI (`palimpsest-index identitylink`).
     """
+    from palimpsest.scorers.type_c import TypeCScorer
     conn = connect(cfg)
-    threshold = float(cfg.gapjoin.get("score_threshold", 0.65))
-
-    # --- 1. Collect subject pages ---
-    # A qualifying subject page: has a subject_ref AND (org OR date OR dosage)
-    subject_rows = conn.execute("""
-        SELECT DISTINCT e.doc_id, e.page_no, e.text AS subj_ref, e.norm AS subj_norm
-        FROM entities e
-        WHERE e.kind = 'subject_ref'
-          AND EXISTS (
-              SELECT 1 FROM entities e2
-              WHERE e2.doc_id = e.doc_id AND e2.page_no = e.page_no
-                AND e2.kind IN ('org', 'date', 'dosage')
-          )
-    """).fetchall()
-
-    if not subject_rows:
-        logger.info("No qualifying subject pages found — skipping identity link join.")
-        return
-
-    logger.info(f"run_identity_link: {len(subject_rows)} subject page(s) to match.")
-
-    # --- 2. Collect named-person pages ---
-    named_rows = conn.execute("""
-        SELECT e.entity_id, e.doc_id, e.page_no, e.text, e.norm, d.year AS doc_year
-        FROM entities e
-        JOIN documents d ON e.doc_id = d.doc_id
-        WHERE e.kind = 'person'
-    """).fetchall()
-
-    if not named_rows:
-        logger.info("No named-person entities found — skipping identity link join.")
-        return
-
-    # Pre-fetch all org and dosage attributes to avoid O(S * N) database queries in the loops
-    named_attrs_map = defaultdict(list)
-    cur_attrs = conn.execute("""
-        SELECT doc_id, page_no, kind, norm FROM entities
-        WHERE kind IN ('org', 'dosage')
-    """)
-    for r in cur_attrs:
-        named_attrs_map[(r["doc_id"], r["page_no"])].append(r)
-
-    inserted = 0
-
-    for subj in subject_rows:
-        s_doc = subj["doc_id"]
-        s_page = subj["page_no"]
-        s_ref = subj["subj_ref"]
-        s_norm = subj["subj_norm"]
-
-        # Gather subject page attributes
-        s_attrs = conn.execute("""
-            SELECT kind, norm FROM entities
-            WHERE doc_id = ? AND page_no = ? AND kind IN ('org', 'date', 'dosage')
-        """, (s_doc, s_page)).fetchall()
-
-        s_orgs    = [r["norm"] for r in s_attrs if r["kind"] == "org"]
-        s_years   = []
-        for r in s_attrs:
-            if r["kind"] == "date":
-                m = re.search(r'\b(\d{4})\b', r["norm"])
-                if m:
-                    s_years.append(int(m.group(1)))
-        s_dosages = {r["norm"] for r in s_attrs if r["kind"] == "dosage"}
-
-        for named in named_rows:
-            # Never link a subject to a person on the same document page
-            if named["doc_id"] == s_doc and named["page_no"] == s_page:
-                continue
-
-            n_doc    = named["doc_id"]
-            n_page   = named["page_no"]
-            n_eid    = named["entity_id"]
-            n_year   = named["doc_year"]
-
-            # Use pre-fetched attributes
-            n_attrs = named_attrs_map[(n_doc, n_page)]
-
-            n_orgs    = [r["norm"] for r in n_attrs if r["kind"] == "org"]
-            n_dosages = {r["norm"] for r in n_attrs if r["kind"] == "dosage"}
-
-            # --- org_match ---
-            org_match = 0.0
-            if s_orgs and n_orgs:
-                best_dist = min(
-                    _edit_distance(so, no)
-                    for so in s_orgs
-                    for no in n_orgs
-                )
-                org_match = 1.0 if best_dist <= 2 else 0.0
-
-            # --- date_proximity ---
-            date_proximity = 0.0
-            if s_years and n_year is not None:
-                min_gap = min(abs(sy - n_year) for sy in s_years)
-                date_proximity = max(0.0, 1.0 - min_gap / 3.0)
-
-            # --- dosage_bonus ---
-            dosage_bonus = 0.2 if (s_dosages & n_dosages) else 0.0
-
-            # --- total score ---
-            score = org_match * 0.5 + date_proximity * 0.3 + dosage_bonus
-
-            if score < threshold:
-                continue
-
-            with conn:
-                conn.execute("""
-                    INSERT OR IGNORE INTO identity_link_candidates
-                      (subject_doc_id, subject_page, subject_ref,
-                       named_doc_id, named_page, named_entity_id,
-                       org_match, date_proximity, dosage_bonus, score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    s_doc, s_page, s_ref,
-                    n_doc, n_page, n_eid,
-                    org_match, date_proximity, dosage_bonus, score
-                ))
-                if conn.execute("SELECT changes()").fetchone()[0]:
-                    inserted += 1
-
-    logger.info(f"Identity link join complete: {inserted} new candidate(s) (threshold={threshold}).")
+    try:
+        TypeCScorer().run(conn, cfg)
+    finally:
+        conn.close()
 
 
-def print_stats(cfg: Config):
-    """Print indexing and gap join statistics."""
-    conn = connect(cfg)
-    
-    # Redaction counts
-    cur = conn.execute("SELECT COUNT(*) FROM redactions")
-    total_red = cur.fetchone()[0]
-    
-    cur = conn.execute("SELECT COUNT(*) FROM gapjoin_runs")
-    joined_red = cur.fetchone()[0]
-    
-    # Skipped redactions
-    cur = conn.execute("""
-        SELECT COUNT(*) 
-        FROM redactions r 
-        JOIN gapjoin_runs g ON r.redaction_id = g.redaction_id 
-        WHERE (length(coalesce(r.context_before, '')) + length(coalesce(r.context_after, '')) + 1) < 40
-    """)
-    skipped_red = cur.fetchone()[0]
-    
-    # Candidate counts
-    cur = conn.execute("SELECT COUNT(*) FROM gap_candidates")
-    total_cand = cur.fetchone()[0]
-    
-    # By method
-    cur = conn.execute("SELECT method, COUNT(*) FROM gap_candidates GROUP BY method")
-    method_counts = {row[0]: row[1] for row in cur.fetchall()}
-    
-    # By score decile
-    cur = conn.execute("SELECT CAST(score * 10 AS INTEGER) as decile, COUNT(*) as cnt FROM gap_candidates GROUP BY decile")
-    decile_counts = {row["decile"]: row["cnt"] for row in cur.fetchall()}
-    
-    # review_queue pending
-    cur = conn.execute("SELECT COUNT(*) FROM review_queue WHERE status = 'pending'")
-    pending_reviews = cur.fetchone()[0]
-    
-    print("=== Palimpsest Indexer Stats ===")
-    print(f"Redactions total:    {total_red}")
-    print(f"Redactions joined:   {joined_red}")
-    print(f"Redactions skipped:  {skipped_red}")
-    print(f"Gap Candidates:      {total_cand}")
-    for method, cnt in method_counts.items():
-        print(f"  - via {method}: {cnt}")
-    print("Score Deciles:")
-    for d in sorted(decile_counts.keys()):
-        lower = d / 10.0
-        upper = (d + 1) / 10.0
-        print(f"  [{lower:.1f} - {upper:.1f}): {decile_counts[d]}")
-    print(f"Pending HITL reviews: {pending_reviews}")
-
-    # Violation candidates (Type e)
-    cur = conn.execute("SELECT COUNT(*) FROM violation_candidates")
-    total_vc = cur.fetchone()[0]
-    cur = conn.execute("SELECT violation_type, COUNT(*) FROM violation_candidates GROUP BY violation_type")
-    vc_types = {row[0]: row[1] for row in cur.fetchall()}
-    print(f"\nViolation Candidates (Type e): {total_vc}")
-    for vtype, cnt in vc_types.items():
-        print(f"  - {vtype}: {cnt}")
-
-    # Series gap candidates (Type f)
-    cur = conn.execute("SELECT COUNT(*) FROM series_gap_candidates")
-    total_sg = cur.fetchone()[0]
-    cur = conn.execute("SELECT status, COUNT(*) FROM series_gap_candidates GROUP BY status")
-    sg_status = {row[0]: row[1] for row in cur.fetchall()}
-    print(f"\nSeries Gap Candidates (Type f): {total_sg}")
-    for status, cnt in sg_status.items():
-        print(f"  - {status}: {cnt}")
-
-    # Identity link candidates (Type c)
-    cur = conn.execute("SELECT COUNT(*) FROM identity_link_candidates")
-    total_ilc = cur.fetchone()[0]
-    cur = conn.execute("SELECT status, COUNT(*) FROM identity_link_candidates GROUP BY status")
-    ilc_status = {row[0]: row[1] for row in cur.fetchall()}
-    print(f"\nIdentity Link Candidates (Type c): {total_ilc}")
-    for status, cnt in ilc_status.items():
-        print(f"  - {status}: {cnt}")
-
-if __name__ == "__main__":
+def main() -> None:
+    """CLI entry point for palimpsest-index."""
     parser = argparse.ArgumentParser(description="Palimpsest Indexer and Gap Join CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1051,20 +564,20 @@ if __name__ == "__main__":
     subparsers.add_parser("stats", help="Show indexing and join statistics")
 
     args = parser.parse_args()
-
     cfg = load()
 
-    if args.command == "build":
-        build_index(cfg)
-    elif args.command == "gapjoin":
-        run_gapjoin(cfg)
-    elif args.command == "violationjoin":
-        run_violation_join(cfg)
-    elif args.command == "seriesjoin":
-        run_series_join(cfg)
-    elif args.command == "outcomegap":
-        run_outcome_gap(cfg)
-    elif args.command == "identitylink":
-        run_identity_link(cfg)
-    elif args.command == "stats":
-        print_stats(cfg)
+    dispatch = {
+        "build":        lambda: build_index(cfg),
+        "gapjoin":      lambda: run_gapjoin(cfg),
+        "violationjoin": lambda: run_violation_join(cfg),
+        "seriesjoin":   lambda: run_series_join(cfg),
+        "outcomegap":   lambda: run_outcome_gap(cfg),
+        "identitylink": lambda: run_identity_link(cfg),
+        "stats":        lambda: print_stats(cfg),
+    }
+    dispatch[args.command]()
+
+
+if __name__ == "__main__":
+    main()
+
