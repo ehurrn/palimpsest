@@ -145,4 +145,6 @@
 - Starting task: TASK-18 — Trust gate + surfacing-boundary enforcement (Iron Rule #4)
 - Completed task: TASK-18 — Trust gate + surfacing-boundary enforcement (Iron Rule #4)
 - Starting task: TASK-19 — Eval verification run
+- Completed task: TASK-19 — Eval verification run
+- Completed Phase 4 — Evaluation & Trust Gate implementation and verification. All tests pass, calibration artifact generated, server-side trust gate enforcement active.
 
