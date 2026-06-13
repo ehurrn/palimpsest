@@ -1,6 +1,7 @@
 # Work Log
 
 ## 2026-06-12
+- Starting Task 10: Phase-1 Verification Run. Writing preflight.py.
 - Completed Task 9: HITL Review CLI + Investigator Skill.
   - Implemented `palimpsest/review.py` with `people`, `people --list`, `gaps`, and `audit` subcommands.
   - Approve propagates `living_status='deceased_historical'` to ALL entity rows sharing the same norm.
@@ -29,9 +30,10 @@
   - Implemented entity normalization per guidelines.
   - Wrote and passed comprehensive unit tests in `tests/test_features.py` asserting correct feature extraction, coordinates, normalization, and overlap resolution.
 
-- Starting Task 5: OCR Task Handler.
-  - Implementing `palimpsest/tasks/ocr.py` with `@handler("ocr")`, embedded-text path, Apple Vision + Tesseract fallback, coordinate flip, confidence filter, and sorting.
-  - Writing `tests/test_ocr.py` with fixture PDFs and unit tests for all paths.
+- Completed Task 5: OCR Task Handler.
+  - Implemented `palimpsest/tasks/ocr.py` with `@handler("ocr")`: embedded-text path via PyMuPDF `get_text("dict")`, Apple Vision fallback via `ocrmac` (bottom-left → top-left bbox flip), Tesseract fallback via `pytesseract`, confidence filter, and top-bottom/left-right sort.
+  - Added `pymupdf`, `Pillow`, `pytesseract`, `ocrmac` to project dependencies.
+  - Wrote and passed 14 unit tests in `tests/test_ocr.py` covering Vision coordinate flip math, confidence filter, sort order, blank page, corrupt PDF → PermanentJobError, and embedded-text vs OCR path selection.
 - Completed Task 4: Worker Daemon.
   - Implemented the worker daemon in `palimpsest/worker.py` and registry in `palimpsest/tasks/__init__.py`.
   - Added support for local model warming requests to local Ollama API (classify, extract, and embed models).
