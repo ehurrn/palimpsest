@@ -132,3 +132,5 @@
 - Completed task: TASK-11 — Eval schema (v7) + `[eval]` config
 - Starting task: TASK-12 — Eval DB isolation + deterministic embedding + synthetic index
 - Completed task: TASK-12 — Eval DB isolation + deterministic embedding + synthetic index
+- Starting task: TASK-13 — Type a/b synthetic case generator + grading oracle
+- Completed task: TASK-13 — Type a/b synthetic case generator + grading oracle
