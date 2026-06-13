@@ -80,8 +80,8 @@ def check_storage(cfg) -> bool:
 
 
 def check_db(cfg) -> bool:
-    """DB migrated at current schema_version (4)."""
-    EXPECTED_VERSION = 4
+    """DB migrated at current schema_version (5)."""
+    EXPECTED_VERSION = 5
     try:
         from palimpsest.db import connect
         conn = connect(cfg)
