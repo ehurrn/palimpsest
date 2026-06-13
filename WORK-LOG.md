@@ -138,3 +138,5 @@
 - Completed task: TASK-14 — Type c synthetic case generator (decoy + answer-absent)
 - Starting task: TASK-15 — Eval runner + `palimpsest-eval` CLI
 - Completed task: TASK-15 — Eval runner + `palimpsest-eval` CLI
+- Starting task: TASK-16 — Calibration: PAV isotonic + Wilson threshold + artifact
+- Completed task: TASK-16 — Calibration: PAV isotonic + Wilson threshold + artifact
