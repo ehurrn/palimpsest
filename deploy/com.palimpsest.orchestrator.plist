@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.palimpsest.orchestrator</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/herren/dev/palimpsest/venv/bin/python</string>
+    <string>-m</string>
+    <string>palimpsest.orchestrator</string>
+    <string>heartbeat</string>
+    <string>--config</string>
+    <string>/Users/herren/dev/palimpsest/config.toml</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/herren/dev/palimpsest</string>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/palimpsest-orchestrator.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/palimpsest-orchestrator.log</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

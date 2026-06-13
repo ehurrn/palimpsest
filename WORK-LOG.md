@@ -1,6 +1,8 @@
 # Work Log
 
 ## 2026-06-13
+- Phase 3 COMPLETE. indexer.py thinned (1071 → 584 lines): run_violation/series/outcome/identity_link replaced with scorer delegates. pyproject.toml [project.scripts] entry points added for all 4 CLI tools. 150 tests green. Committed 367c830.
+- Phase 3 scorer registry complete (solo — agy). Created palimpsest/scorers/ package: base.py (Candidate, Scorer), __init__.py (SCORERS registry), type_c/d/e/f.py extracted from indexer.py. Added type_key + top() to all scorers. Added Config.orchestrator field. Fixed test_ocr.py fixture. Committed orchestrator.py from prior agent. 150 tests green. Pushed to main.
 - Phase 3 implementation resumed (solo — agy). Mesh agents previously wrote type_a.py, type_b.py, and six scorer test files but left base.py, __init__.py, type_c.py, type_d.py, type_e.py, type_f.py missing. Config orchestrator field, pyproject entry points, and orchestrator.py also remain incomplete. Starting now with base.py + __init__.py to unblock failing tests.
 - Completed implementation of code review improvements: optimized run_identity_link database queries (O(S * N) to single query) and unified outcome_ref entity format to use standard 'bbox' representation. All tests verified green.
 - Completed Type c (anonymous identity linkage): schema v6 `identity_link_candidates` table, `_edit_distance()` helper, `run_identity_link()` scorer (org+date+dosage weighted formula), `identitylink` CLI subcommand, `review links` HITL gate (enforces deceased_historical approval before any name surface), bumped preflight EXPECTED_VERSION to 6. 10 new tests in `tests/test_identity.py`; full suite 101 passing. Pushed to origin/main. All six Phase 2 finding-types now implemented.
