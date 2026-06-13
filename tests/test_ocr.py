@@ -198,7 +198,8 @@ def test_image_only_falls_back_to_ocr(mock_client_cls: MagicMock) -> None:
 def test_blank_page_produces_valid_empty_page(mock_client_cls: MagicMock) -> None:
     """A page with no text is valid: empty lines list and empty text string."""
     mock_client_cls.return_value = _mock_http_client(_make_blank_pdf())
-    pages = handle_ocr(_make_config(), {"doc_id": "33333", "job_id": 3, "type": "ocr"})
+    with patch("palimpsest.tasks.ocr._ocr_page", return_value=([], "vision")):
+        pages = handle_ocr(_make_config(), {"doc_id": "33333", "job_id": 3, "type": "ocr"})
     assert len(pages) == 1
     assert pages[0]["lines"] == []
     assert pages[0]["text"] == ""
