@@ -1,6 +1,15 @@
 # Work Log
 
 ## 2026-06-12
+- Completed Task 9: HITL Review CLI + Investigator Skill.
+  - Implemented `palimpsest/review.py` with `people`, `people --list`, `gaps`, and `audit` subcommands.
+  - Approve propagates `living_status='deceased_historical'` to ALL entity rows sharing the same norm.
+  - Deny sets `living_status='potentially_living'` for that norm, blocking forever unless manually re-queued.
+  - Decisions appended to `{root}/db/review_audit.jsonl` using SHA-256 hash of norm — plaintext name is never written.
+  - Gap candidate verification sets `reviewed_by/at/notes` and `status='verified'|'rejected'`.
+  - Wrote `skills/palimpsest-investigator/SKILL.md` with provenance invariant, identity rule, methodology loop, negative results guidance, and findings output format.
+  - Wrote and passed 8 unit tests in `tests/test_review.py` (53 total passing).
+- Starting Task 9: HITL Review CLI + Investigator Skill.
 - Completed Task 8: MCP Server (read-only, gonktop).
   - Implemented `palimpsest/server.py` using FastMCP, exposing read-only tools: `palimpsest_find_redaction_gaps`, `palimpsest_search`, `palimpsest_get_document`, `palimpsest_get_entity`, `palimpsest_queue_status`, and `palimpsest_review_queue`.
   - Implemented complete person masking logic across all tool responses, pseudonymizing non-approved persons while allowing approved deceased_historical ones.
