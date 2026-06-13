@@ -1,6 +1,7 @@
 # Work Log
 
 ## 2026-06-13
+- Completed OFFLINE-INSTRUCTIONS.md rewrite: updated to reflect Phase 2 state (Types b/d/e/f complete, schema v5, 91 tests), full Type c implementation spec with DB schema, scorer pseudocode, review gate, and test requirements. This is the handoff document for offline local-model sessions.
 - Completed Type d (outcome suppression gap): merged feature/type-d to main. Fixed pre-existing test_gapjoin_algorithm score expectation (0.899 proximity bonus). Resolved merge conflict between outcome_ref (Type d) and seq_ref/subject_ref (agy Type f/b uncommitted work). Committed agy's Phase 2 changes. Full suite: 91 tests passing. Pushed to origin/main. Next: Type c (identity linkage).
 
 ## 2026-06-12
