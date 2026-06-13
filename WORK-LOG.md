@@ -134,3 +134,5 @@
 - Completed task: TASK-12 — Eval DB isolation + deterministic embedding + synthetic index
 - Starting task: TASK-13 — Type a/b synthetic case generator + grading oracle
 - Completed task: TASK-13 — Type a/b synthetic case generator + grading oracle
+- Starting task: TASK-14 — Type c synthetic case generator (decoy + answer-absent)
+- Completed task: TASK-14 — Type c synthetic case generator (decoy + answer-absent)
