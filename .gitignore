@@ -14,3 +14,13 @@ config.toml
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# human added
+.gitignore.swp
+docs/superpowers/plans/2026-06-13-scorer-registry-orchestrator-01.md
+docs/superpowers/plans/2026-06-13-scorer-registry-orchestrator-02.md
+docs/superpowers/plans/2026-06-13-scorer-registry-orchestrator-03.md
+docs/superpowers/plans/2026-06-13-scorer-registry-orchestrator-04.md
+**/.DS_Store
+2026-06-13-scorer-registry-orchestrator-design.md
+

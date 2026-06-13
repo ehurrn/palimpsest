@@ -27,6 +27,7 @@ class TypeFScorer:
     """Type f: detect gaps in document series (missing accession numbers)."""
 
     type_key = "type_f"
+    candidates_table = "series_gap_candidates"
 
     def top(self, conn: sqlite3.Connection, limit: int = 20) -> list[Candidate]:
         """Return the top-scoring series gap candidates from the DB."""

@@ -47,12 +47,14 @@ def _check_queue_depth(conn, config: Config) -> int:
 
 def _check_candidate_counts(
     conn,
+    config: Config,
     last_counts: dict[str, int],
 ) -> dict[str, int]:
     """Count candidates per scorer type. Log a flag if count grew significantly."""
     threshold = int(config.orchestrator.get("candidate_investigate_threshold", 50))
     current: dict[str, int] = {}
-    for key, scorer in SCORERS.items():
+    for key, scorer_cls in SCORERS.items():
+        scorer = scorer_cls()
         try:
             count = conn.execute(
                 f"SELECT COUNT(*) FROM {scorer.candidates_table} "
@@ -130,7 +132,7 @@ def run_heartbeat(config: Config) -> None:
         except Exception as e:
             logger.error("Queue depth check failed: %s", e)
         try:
-            last_counts = _check_candidate_counts(conn, last_counts)
+            last_counts = _check_candidate_counts(conn, config, last_counts)
         except Exception as e:
             logger.error("Candidate sweep failed: %s", e)
         try:
@@ -163,7 +165,7 @@ def run_investigate(config: Config, type_key: str, limit: int, output: Path | No
         )
 
     conn = connect(config)
-    scorer = SCORERS[type_key]
+    scorer = SCORERS[type_key]()
     candidates: list[Candidate] = scorer.top(conn, limit=limit)
 
     if not candidates:

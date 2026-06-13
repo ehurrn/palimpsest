@@ -125,3 +125,7 @@
 - Wrote specs/EVAL-TRUST-GATE.md (source-of-truth design) + 8 executable packets specs/TASK-11..18 (schema v7; isolation+lexical-embedding; a/b generator+oracle; c generator; runner+CLI; PAV/Wilson calibration; metrics+report w/ mandatory validity disclosure; trust gate + server enforcement = Iron Rule #4).
 - No production code changed. Packets are TDD, self-contained, house-style. Self-review fixed two cross-case-contamination bugs in the synthetic generators + one lint defect.
 - BLOCKER for REAL calibration numbers: Ollama embed down on M4 (see HUMAN_DO_THIS.md). Plan is fully executable now with the lexical stub (plumbing-only numbers).
+
+## 2026-06-13 (Plan finalized — Manager)
+- Added entry-point runbook specs/EVAL-PLAN.md (ordered TASK list, per-packet protocol, definition of done, pre-flight: clear stale .git/HEAD.lock + commit code-review baseline) and TASK-19 verification packet. Updated EVAL-TRUST-GATE build order.
+- Plan is handoff-ready for agy/gemini: TASK-11..19. Real calibration still blocked on Ollama (HUMAN_DO_THIS.md).

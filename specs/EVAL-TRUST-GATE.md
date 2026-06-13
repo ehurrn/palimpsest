@@ -333,7 +333,7 @@ both gates must pass; the trust gate never weakens masking.
 
 - **Type e** — no synthetic ground truth; detector fires on any citation. Needs
   a tightened procedure-vs-rule detector and a small hand-labeled set. Tracked
-  separately (candidate TASK-19, not in this plan).
+  separately (a post-Phase-4 packet, not in this plan).
 - **Types d, f** — absence findings; a different evaluation regime ("is the gap
   real?"). Out of scope.
 - **Adversarial redactor model** (strip corroborating context, vary redaction
@@ -356,7 +356,9 @@ both gates must pass; the trust gate never weakens masking.
 | TASK-16 | `stats.py` (PAV + Wilson) + calibrate + `calibrate` CLI | 15 |
 | TASK-17 | Metrics + report + `report` CLI | 16 |
 | TASK-18 | Gate + `server.py` enforcement | 16 |
+| TASK-19 | End-to-end verification run | all |
 
+The entry-point/runbook for workers is `specs/EVAL-PLAN.md`.
 Each packet ends in pytest commands with expected output and a commit. Prove the
 packet's tests green before moving on (Phase 1 discipline).
 

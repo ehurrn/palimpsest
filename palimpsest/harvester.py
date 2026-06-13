@@ -5,6 +5,7 @@ import sys
 import time
 import re
 import datetime
+from pathlib import Path
 import httpx
 from bs4 import BeautifulSoup
 
@@ -41,8 +42,9 @@ def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) ->
                 consecutive_403_count += 1
                 if consecutive_403_count >= 3:
                     print("CRITICAL: Received 3 consecutive 403 Forbidden responses. Aborting.", file=sys.stderr)
-                    # Write to local HUMAN_DO_THIS.md
-                    with open("/Users/herren/dev/palimpsest/HUMAN_DO_THIS.md", "a") as f:
+                    # Write to HUMAN_DO_THIS.md at the project root (palimpsest/harvester.py -> repo root)
+                    human_do_this = Path(__file__).resolve().parent.parent / "HUMAN_DO_THIS.md"
+                    with open(human_do_this, "a") as f:
                         f.write("- OSTI may have blocked us — stop and email opennet@osti.gov\n")
                     sys.exit("Blocked by OSTI")
                 wait_time = backoff

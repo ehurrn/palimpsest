@@ -550,6 +550,52 @@ def run_identity_link(cfg: Config) -> None:
         conn.close()
 
 
+def print_stats(cfg: Config) -> None:
+    """Print index and gap-join statistics to stdout.
+
+    Reports document pipeline counts, FAISS index size, redaction-gap join
+    progress, and per-scorer candidate counts.
+    """
+    conn = connect(cfg)
+
+    print("=== Document pipeline ===")
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS n FROM documents GROUP BY status ORDER BY status"
+    ).fetchall()
+    if rows:
+        for row in rows:
+            print(f"  {row['status']}: {row['n']}")
+    else:
+        print("  (no documents)")
+
+    index_path = cfg.storage_root / "index" / "faiss.idx"
+    print("\n=== FAISS index ===")
+    if index_path.exists():
+        index = faiss.read_index(str(index_path))
+        print(f"  vectors: {index.ntotal}")
+    else:
+        print("  (not built)")
+
+    total_red = conn.execute("SELECT COUNT(*) FROM redactions").fetchone()[0]
+    joined_red = conn.execute("SELECT COUNT(*) FROM gapjoin_runs").fetchone()[0]
+    print("\n=== Redaction-gap join ===")
+    print(f"  total redactions:  {total_red}")
+    print(f"  joined redactions: {joined_red}")
+
+    print("\n=== Scorer candidates ===")
+    from palimpsest.scorers import SCORERS
+
+    for key, scorer_cls in SCORERS.items():
+        table = scorer_cls.candidates_table
+        try:
+            n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            print(f"  {key} ({table}): {n}")
+        except Exception as e:
+            print(f"  {key} ({table}): n/a ({e})")
+
+    conn.close()
+
+
 def main() -> None:
     """CLI entry point for palimpsest-index."""
     parser = argparse.ArgumentParser(description="Palimpsest Indexer and Gap Join CLI")

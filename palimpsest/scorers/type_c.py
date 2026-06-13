@@ -47,6 +47,35 @@ class TypeCScorer:
     """Type c: link anonymous subject_ref pages to named-person pages."""
 
     type_key = "type_c"
+    candidates_table = "identity_link_candidates"
+
+    def top(self, conn: sqlite3.Connection, limit: int = 20) -> list[Candidate]:
+        """Return the top-scoring identity-link candidates from the DB."""
+        rows = conn.execute("""
+            SELECT subject_doc_id, subject_page, subject_ref,
+                   named_doc_id, named_page, named_entity_id, score
+            FROM identity_link_candidates
+            ORDER BY score DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        results: list[Candidate] = []
+        for row in rows:
+            eids = [row["named_entity_id"]] if row["named_entity_id"] else []
+            results.append(Candidate(
+                type_key=self.type_key,
+                score=row["score"],
+                doc_ids=[row["subject_doc_id"], row["named_doc_id"]],
+                page_refs=[
+                    f"{row['subject_doc_id']} p.{row['subject_page']}",
+                    f"{row['named_doc_id']} p.{row['named_page']}",
+                ],
+                summary=(
+                    f"Subject ref {row['subject_ref']!r} linked to person entity "
+                    f"{row['named_entity_id']} (score={row['score']:.2f})"
+                ),
+                entity_ids=eids,
+            ))
+        return results
 
     def run(self, conn: sqlite3.Connection, cfg: Config) -> list[Candidate]:
         threshold = float(cfg.gapjoin.get("score_threshold", 0.65))

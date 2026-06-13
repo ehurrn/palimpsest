@@ -17,10 +17,10 @@ if TYPE_CHECKING:
     from palimpsest.scorers.base import Scorer
 
 # Registry populated by _register() calls at the bottom of this file.
-SCORERS: dict[str, type] = {}
+SCORERS: dict[str, type[Scorer]] = {}
 
 
-def _register(key: str, cls: type) -> None:
+def _register(key: str, cls: type[Scorer]) -> None:
     SCORERS[key] = cls
 
 

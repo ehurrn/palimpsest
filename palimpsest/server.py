@@ -44,26 +44,56 @@ def get_ro_connection(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     return conn
 
-def mask_person(entity_row: Dict[str, Any], conn: sqlite3.Connection) -> str:
+def load_approved_person_ids(conn: sqlite3.Connection) -> set[int]:
+    """Return the set of entity_ids approved in the review_queue.
+
+    Fetched once per tool call so the mask helpers can resolve approval with a
+    set membership check instead of one SELECT per entity (avoids an N+1).
+    """
+    cur = conn.execute("SELECT entity_id FROM review_queue WHERE status = 'approved'")
+    return {row[0] for row in cur.fetchall()}
+
+
+def _is_approved(
+    entity_id: int,
+    conn: sqlite3.Connection,
+    approved_ids: set[int] | None,
+) -> bool:
+    """Resolve approval, using a precomputed set when available else a point query."""
+    if approved_ids is not None:
+        return entity_id in approved_ids
+    cur = conn.execute(
+        "SELECT 1 FROM review_queue WHERE entity_id = ? AND status = 'approved'",
+        (entity_id,),
+    )
+    return cur.fetchone() is not None
+
+
+def mask_person(
+    entity_row: Dict[str, Any],
+    conn: sqlite3.Connection,
+    approved_ids: set[int] | None = None,
+) -> str:
     """Return entity text if living_status='deceased_historical' and approved in review_queue; else pseudonym."""
     if entity_row.get("kind") != "person":
         return entity_row.get("text", "")
-        
+
     approved = False
     if entity_row.get("living_status") == "deceased_historical":
-        cur = conn.execute(
-            "SELECT 1 FROM review_queue WHERE entity_id = ? AND status = 'approved'",
-            (entity_row["entity_id"],)
-        )
-        if cur.fetchone():
-            approved = True
-            
+        approved = _is_approved(entity_row["entity_id"], conn, approved_ids)
+
     if approved:
         return entity_row.get("text", "")
     else:
         return f"PERSON-{entity_row['entity_id']:04d}"
 
-def get_masked_text_for_page(doc_id: str, page_no: int, text: str, conn: sqlite3.Connection) -> str:
+def get_masked_text_for_page(
+    doc_id: str,
+    page_no: int,
+    text: str,
+    conn: sqlite3.Connection,
+    approved_ids: set[int] | None = None,
+) -> str:
     """Replace non-approved person entities in page text with pseudonyms."""
     if not text:
         return ""
@@ -72,36 +102,37 @@ def get_masked_text_for_page(doc_id: str, page_no: int, text: str, conn: sqlite3
         (doc_id, page_no)
     )
     entities = cur.fetchall()
-    
+
     valid_ents = []
     for ent in entities:
         if ent["char_start"] is not None and ent["char_end"] is not None:
             valid_ents.append(ent)
-            
+
     # Sort in descending order to avoid offset shifting
     valid_ents.sort(key=lambda e: e["char_start"], reverse=True)
-    
+
     masked = list(text)
     for ent in valid_ents:
         approved = False
         if ent["living_status"] == "deceased_historical":
-            cur_app = conn.execute(
-                "SELECT 1 FROM review_queue WHERE entity_id = ? AND status = 'approved'",
-                (ent["entity_id"],)
-            )
-            if cur_app.fetchone():
-                approved = True
-                
+            approved = _is_approved(ent["entity_id"], conn, approved_ids)
+
         if not approved:
             pseudonym = f"PERSON-{ent['entity_id']:04d}"
             start = ent["char_start"]
             end = ent["char_end"]
             if 0 <= start <= len(text) and 0 <= end <= len(text) and start <= end:
                 masked[start:end] = list(pseudonym)
-                
+
     return "".join(masked)
 
-def mask_context_text(doc_id: str, page_no: int, context: str, conn: sqlite3.Connection) -> str:
+def mask_context_text(
+    doc_id: str,
+    page_no: int,
+    context: str,
+    conn: sqlite3.Connection,
+    approved_ids: set[int] | None = None,
+) -> str:
     """Mask non-approved person entity mentions inside substring contexts."""
     if not context:
         return ""
@@ -110,22 +141,17 @@ def mask_context_text(doc_id: str, page_no: int, context: str, conn: sqlite3.Con
         (doc_id, page_no)
     )
     entities = cur.fetchall()
-    
+
     for ent in entities:
         approved = False
         if ent["living_status"] == "deceased_historical":
-            cur_app = conn.execute(
-                "SELECT 1 FROM review_queue WHERE entity_id = ? AND status = 'approved'",
-                (ent["entity_id"],)
-            )
-            if cur_app.fetchone():
-                approved = True
-                
+            approved = _is_approved(ent["entity_id"], conn, approved_ids)
+
         if not approved:
             pseudonym = f"PERSON-{ent['entity_id']:04d}"
             pattern = re.compile(r'\b' + re.escape(ent["text"]) + r'\b', re.IGNORECASE)
             context = pattern.sub(pseudonym, context)
-            
+
     return context
 
 def get_citation(row: Dict[str, Any], prefix: str) -> Dict[str, Any]:
@@ -175,26 +201,27 @@ def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candi
     try:
         cur = conn.execute(query, params)
         rows = cur.fetchall()
-        
+        approved_ids = load_approved_person_ids(conn)
+
         results = []
         for row in rows:
             r_citation = get_citation(row, "r_")
             e_citation = get_citation(row, "e_")
-            
+
             ent_row = {
                 "entity_id": row["entity_id"],
                 "kind": row["e_kind"],
                 "text": row["e_text"],
                 "living_status": row["e_living_status"]
             }
-            masked_text = mask_person(ent_row, conn)
-            
+            masked_text = mask_person(ent_row, conn, approved_ids)
+
             # Context for clear entity
             cur_p = conn.execute("SELECT text FROM pages WHERE doc_id = ? AND page_no = ?", (row["e_doc_id"], row["e_page_no"]))
             page_row = cur_p.fetchone()
             p_text = page_row["text"] if page_row else ""
-            masked_p_text = get_masked_text_for_page(row["e_doc_id"], row["e_page_no"], p_text, conn)
-            
+            masked_p_text = get_masked_text_for_page(row["e_doc_id"], row["e_page_no"], p_text, conn, approved_ids)
+
             c_start = row["e_char_start"]
             c_end = row["e_char_end"]
             if c_start is not None and c_end is not None:
@@ -203,9 +230,9 @@ def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candi
                 e_context = masked_p_text[start_idx:end_idx]
             else:
                 e_context = ""
-                
-            r_ctx_before = mask_context_text(row["r_doc_id"], row["r_page_no"], row["context_before"], conn)
-            r_ctx_after = mask_context_text(row["r_doc_id"], row["r_page_no"], row["context_after"], conn)
+
+            r_ctx_before = mask_context_text(row["r_doc_id"], row["r_page_no"], row["context_before"], conn, approved_ids)
+            r_ctx_after = mask_context_text(row["r_doc_id"], row["r_page_no"], row["context_after"], conn, approved_ids)
             
             results.append({
                 "gap_id": row["gap_id"],
@@ -298,18 +325,19 @@ def palimpsest_search(query: str, limit: int = 10) -> str:
         
         # Map row details by chunk_id
         row_map = {row["chunk_id"]: row for row in rows}
-        
+        approved_ids = load_approved_person_ids(conn)
+
         results = []
         for idx, cid in enumerate(I[0]):
             if cid == -1 or cid not in row_map:
                 continue
             row = row_map[cid]
-            
+
             # Fetch and mask page text
             cur_p = conn.execute("SELECT text FROM pages WHERE doc_id = ? AND page_no = ?", (row["doc_id"], row["page_no"]))
             page_row = cur_p.fetchone()
             p_text = page_row["text"] if page_row else ""
-            masked_p_text = get_masked_text_for_page(row["doc_id"], row["page_no"], p_text, conn)
+            masked_p_text = get_masked_text_for_page(row["doc_id"], row["page_no"], p_text, conn, approved_ids)
             
             c_start = row["char_start"]
             c_end = row["char_end"]
@@ -368,24 +396,25 @@ def palimpsest_get_document(doc_id: str, page_no: int = None) -> str:
         else:
             cur_p = conn.execute("SELECT page_no, text FROM pages WHERE doc_id = ? ORDER BY page_no ASC", (doc_id,))
         pages_rows = cur_p.fetchall()
-        
+        approved_ids = load_approved_person_ids(conn)
+
         pages = []
         for p_row in pages_rows:
             p_num = p_row["page_no"]
-            masked_text = get_masked_text_for_page(doc_id, p_num, p_row["text"], conn)
+            masked_text = get_masked_text_for_page(doc_id, p_num, p_row["text"], conn, approved_ids)
             pages.append({
                 "page_no": p_num,
                 "text": masked_text
             })
-            
+
         # Fetch redactions
         cur_r = conn.execute("SELECT redaction_id, page_no, kind, label, x0, y0, x1, y1, context_before, context_after FROM redactions WHERE doc_id = ?", (doc_id,))
         red_rows = cur_r.fetchall()
         redactions = []
         for r_row in red_rows:
             p_num = r_row["page_no"]
-            r_ctx_before = mask_context_text(doc_id, p_num, r_row["context_before"], conn)
-            r_ctx_after = mask_context_text(doc_id, p_num, r_row["context_after"], conn)
+            r_ctx_before = mask_context_text(doc_id, p_num, r_row["context_before"], conn, approved_ids)
+            r_ctx_after = mask_context_text(doc_id, p_num, r_row["context_after"], conn, approved_ids)
             redactions.append({
                 "redaction_id": r_row["redaction_id"],
                 "page_no": p_num,
@@ -401,7 +430,7 @@ def palimpsest_get_document(doc_id: str, page_no: int = None) -> str:
         ent_rows = cur_e.fetchall()
         entities = []
         for e_row in ent_rows:
-            masked_text = mask_person(dict(e_row), conn)
+            masked_text = mask_person(dict(e_row), conn, approved_ids)
             entities.append({
                 "entity_id": e_row["entity_id"],
                 "page_no": e_row["page_no"],
@@ -454,7 +483,8 @@ def palimpsest_get_entity(norm: str, kind: str = None, limit: int = 50) -> str:
     try:
         cur = conn.execute(query, params)
         rows = cur.fetchall()
-        
+        approved_ids = load_approved_person_ids(conn)
+
         results = []
         for row in rows:
             ent_row = {
@@ -463,7 +493,7 @@ def palimpsest_get_entity(norm: str, kind: str = None, limit: int = 50) -> str:
                 "text": row["text"],
                 "living_status": row["living_status"]
             }
-            masked_text = mask_person(ent_row, conn)
+            masked_text = mask_person(ent_row, conn, approved_ids)
             
             results.append({
                 "entity_id": row["entity_id"],

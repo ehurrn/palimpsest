@@ -27,6 +27,7 @@ class TypeDScorer:
     """Type d: protocol_code in initiation doc with no outcome doc found."""
 
     type_key = "type_d"
+    candidates_table = "outcome_gap_candidates"
 
     def top(self, conn: sqlite3.Connection, limit: int = 20) -> list[Candidate]:
         """Return the top-scoring outcome gap candidates from the DB."""

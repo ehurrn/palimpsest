@@ -42,11 +42,23 @@ class Candidate:
 class Scorer(Protocol):
     """Protocol that every scorer class must satisfy."""
 
+    #: Name of the SQLite table this scorer writes its candidates to.
+    #: The orchestrator reads it to count candidates and report progress.
+    candidates_table: str
+
     def run(self, conn: sqlite3.Connection, cfg: Config) -> list[Candidate]:
         """Execute the scorer and return a (possibly empty) list of Candidates.
 
         Implementations are responsible for writing their results to the
         appropriate candidate table in *conn* AND returning the same data as
         Candidate objects for in-process consumers.
+        """
+        ...
+
+    def top(self, conn: sqlite3.Connection, limit: int) -> list[Candidate]:
+        """Return the top-scoring existing candidates from *candidates_table*.
+
+        Reads previously persisted rows (highest score first) and reconstructs
+        them as Candidate objects for the orchestrator's investigate command.
         """
         ...
