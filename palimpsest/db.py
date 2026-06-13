@@ -1,7 +1,6 @@
 # palimpsest/db.py
 import sqlite3
 import sys
-from pathlib import Path
 from palimpsest.config import load
 
 def connect(cfg):
@@ -185,6 +184,23 @@ def migrate(cfg):
                 (citation, eff_date, snippet)
             )
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (3);")
+
+        # Schema v4 — Series Suppression (Type f) support
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS series_gap_candidates (
+          gap_id            INTEGER PRIMARY KEY,
+          series_prefix     TEXT NOT NULL,
+          missing_number    INTEGER NOT NULL,
+          missing_accession TEXT NOT NULL UNIQUE,
+          flanking_doc_id   TEXT REFERENCES documents(doc_id),
+          ref_entity_id     INTEGER REFERENCES entities(entity_id),
+          score             REAL NOT NULL,
+          status            TEXT DEFAULT 'candidate',
+          reviewed_by       TEXT,
+          reviewed_at       TEXT,
+          notes             TEXT
+        );""")
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (4);")
 
 
 if __name__ == "__main__":

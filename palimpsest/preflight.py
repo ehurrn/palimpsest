@@ -7,9 +7,7 @@ Exit: 0 if all PASS, 1 if any FAIL.
 """
 
 import logging
-import os
 import shutil
-import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -82,8 +80,8 @@ def check_storage(cfg) -> bool:
 
 
 def check_db(cfg) -> bool:
-    """DB migrated at current schema_version (2)."""
-    EXPECTED_VERSION = 3
+    """DB migrated at current schema_version (4)."""
+    EXPECTED_VERSION = 4
     try:
         from palimpsest.db import connect
         conn = connect(cfg)
