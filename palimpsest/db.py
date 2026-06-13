@@ -113,7 +113,7 @@ def migrate(cfg):
           redaction_id INTEGER PRIMARY KEY REFERENCES redactions(redaction_id),
           run_at TEXT NOT NULL
         );""")
-        conn.execute("UPDATE schema_version SET version = 2 WHERE version < 2;")
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (2);")
 
         # Schema v3 — Type-e regulatory violation support
         conn.execute("""
@@ -184,7 +184,7 @@ def migrate(cfg):
                 "INSERT OR IGNORE INTO regulation_citations (citation, effective_date, text_snippet) VALUES (?, ?, ?)",
                 (citation, eff_date, snippet)
             )
-        conn.execute("UPDATE schema_version SET version = 3 WHERE version < 3;")
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (3);")
 
 
 if __name__ == "__main__":
