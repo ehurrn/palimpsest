@@ -870,6 +870,15 @@ def run_identity_link(cfg: Config) -> None:
         logger.info("No named-person entities found — skipping identity link join.")
         return
 
+    # Pre-fetch all org and dosage attributes to avoid O(S * N) database queries in the loops
+    named_attrs_map = defaultdict(list)
+    cur_attrs = conn.execute("""
+        SELECT doc_id, page_no, kind, norm FROM entities
+        WHERE kind IN ('org', 'dosage')
+    """)
+    for r in cur_attrs:
+        named_attrs_map[(r["doc_id"], r["page_no"])].append(r)
+
     inserted = 0
 
     for subj in subject_rows:
@@ -903,11 +912,8 @@ def run_identity_link(cfg: Config) -> None:
             n_eid    = named["entity_id"]
             n_year   = named["doc_year"]
 
-            # Gather named page attributes
-            n_attrs = conn.execute("""
-                SELECT kind, norm FROM entities
-                WHERE doc_id = ? AND page_no = ? AND kind IN ('org', 'dosage')
-            """, (n_doc, n_page)).fetchall()
+            # Use pre-fetched attributes
+            n_attrs = named_attrs_map[(n_doc, n_page)]
 
             n_orgs    = [r["norm"] for r in n_attrs if r["kind"] == "org"]
             n_dosages = {r["norm"] for r in n_attrs if r["kind"] == "dosage"}

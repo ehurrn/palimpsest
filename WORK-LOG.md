@@ -1,6 +1,7 @@
 # Work Log
 
 ## 2026-06-13
+- Completed implementation of code review improvements: optimized run_identity_link database queries (O(S * N) to single query) and unified outcome_ref entity format to use standard 'bbox' representation. All tests verified green.
 - Completed Type c (anonymous identity linkage): schema v6 `identity_link_candidates` table, `_edit_distance()` helper, `run_identity_link()` scorer (org+date+dosage weighted formula), `identitylink` CLI subcommand, `review links` HITL gate (enforces deceased_historical approval before any name surface), bumped preflight EXPECTED_VERSION to 6. 10 new tests in `tests/test_identity.py`; full suite 101 passing. Pushed to origin/main. All six Phase 2 finding-types now implemented.
 - Completed OFFLINE-INSTRUCTIONS.md rewrite: updated to reflect Phase 2 state (Types b/d/e/f complete, schema v5, 91 tests), full Type c implementation spec with DB schema, scorer pseudocode, review gate, and test requirements. This is the handoff document for offline local-model sessions.
 - Completed Type d (outcome suppression gap): merged feature/type-d to main. Fixed pre-existing test_gapjoin_algorithm score expectation (0.899 proximity bonus). Resolved merge conflict between outcome_ref (Type d) and seq_ref/subject_ref (agy Type f/b uncommitted work). Committed agy's Phase 2 changes. Full suite: 91 tests passing. Pushed to origin/main. Next: Type c (identity linkage).

@@ -613,7 +613,7 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                     "norm": norm,
                     "char_start": char_start,
                     "char_end": char_end,
-                    "x0": None, "y0": None, "x1": None, "y1": None,
+                    "bbox": [None, None, None, None],
                 })
 
         # seq_ref extraction
