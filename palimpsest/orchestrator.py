@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import logging
-import time
+import threading
 from pathlib import Path
 
 import httpx
@@ -85,7 +85,7 @@ def _check_worker_liveness(config: Config) -> None:
         resp.raise_for_status()
         data = resp.json()
         workers = data.get("workers", [])
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         alive = [
             w for w in workers
             if w.get("last_heartbeat") and
@@ -115,18 +115,23 @@ def run_heartbeat(config: Config) -> None:
     last_counts: dict[str, int] = {}
 
     import signal
-    running = True
+
+    # An Event lets the inter-tick wait wake instantly on SIGTERM/SIGINT
+    # instead of blocking inside time.sleep() for up to `interval` seconds.
+    stop_event = threading.Event()
 
     def _stop(sig, frame):
-        nonlocal running
         logger.info("Orchestrator received signal %s — stopping", sig)
-        running = False
+        stop_event.set()
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    while running:
-        logger.info("--- Heartbeat tick at %s ---", datetime.datetime.utcnow().isoformat())
+    while not stop_event.is_set():
+        logger.info(
+            "--- Heartbeat tick at %s ---",
+            datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        )
         try:
             _check_queue_depth(conn, config)
         except Exception as e:
@@ -140,8 +145,8 @@ def run_heartbeat(config: Config) -> None:
         except Exception as e:
             logger.error("Worker liveness check failed: %s", e)
 
-        if running:
-            time.sleep(interval)
+        # Interruptible sleep: returns immediately once _stop sets the event.
+        stop_event.wait(timeout=interval)
 
     logger.info("Orchestrator heartbeat stopped.")
 
@@ -177,7 +182,7 @@ def run_investigate(config: Config, type_key: str, limit: int, output: Path | No
         return
 
     lines: list[str] = [
-        f"\n\n<!-- investigate run: {datetime.datetime.utcnow().isoformat()} "
+        f"\n\n<!-- investigate run: {datetime.datetime.now(datetime.timezone.utc).isoformat()} "
         f"type={type_key} limit={limit} -->\n"
     ]
     for i, cand in enumerate(candidates, start=1):
