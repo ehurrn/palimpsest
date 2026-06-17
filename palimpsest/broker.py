@@ -1,6 +1,7 @@
 # palimpsest/broker.py
 import datetime
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -14,6 +15,29 @@ from palimpsest.db import connect
 
 app = FastAPI()
 cfg = load()
+
+# doc_id is interpolated into filesystem paths (raw/, ocr/, features/ dirs), so
+# it must be a bare OSTI numeric id. Anything else (separators, "..", NUL, or
+# Unicode "digits" that str.isdigit() would wrongly accept) is rejected before
+# it can escape storage_root.
+_DOC_ID_RE = re.compile(r"^[0-9]+$")
+
+
+def validate_doc_id(doc_id: str) -> str:
+    """Return doc_id if it is a safe bare numeric id, else raise HTTP 400.
+
+    Args:
+        doc_id: Candidate document identifier from a request or job row.
+
+    Returns:
+        The validated doc_id (unchanged).
+
+    Raises:
+        HTTPException: 400 if doc_id is not strictly ``[0-9]+``.
+    """
+    if not isinstance(doc_id, str) or not _DOC_ID_RE.match(doc_id):
+        raise HTTPException(status_code=400, detail="Invalid document ID")
+    return doc_id
 
 # Body request models
 class EnqueuePayload(BaseModel):
@@ -88,6 +112,7 @@ def startup_event():
 
 @app.post("/enqueue")
 def enqueue(job: EnqueuePayload):
+    validate_doc_id(job.doc_id)
     conn = connect(cfg)
     now = utc_now_str()
     try:
@@ -192,7 +217,10 @@ def complete(req: CompletePayload):
         
         job_type = job["type"]
         doc_id = job["doc_id"]
-        
+        # Defense-in-depth: never build a storage path from an unsafe doc_id,
+        # even if a row predates /enqueue validation.
+        validate_doc_id(doc_id)
+
         # Result handling (broker-side persistence)
         if job_type == "ocr":
             # Write ocr json file atomically
@@ -373,8 +401,7 @@ def status():
 
 @app.get("/file/{doc_id}.pdf")
 def get_file(doc_id: str):
-    if not doc_id.isdigit():
-        raise HTTPException(status_code=400, detail="Invalid document ID")
+    validate_doc_id(doc_id)
     path = cfg.storage_root / "raw" / f"{doc_id}.pdf"
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -382,8 +409,7 @@ def get_file(doc_id: str):
 
 @app.get("/ocr/{doc_id}.json")
 def get_ocr(doc_id: str):
-    if not doc_id.isdigit():
-        raise HTTPException(status_code=400, detail="Invalid document ID")
+    validate_doc_id(doc_id)
     path = cfg.storage_root / "ocr" / f"{doc_id}.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")

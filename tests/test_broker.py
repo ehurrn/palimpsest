@@ -304,7 +304,21 @@ def test_ocr_result_handling(client):
     
     resp = client.get("/ocr/abc.json")
     assert resp.status_code == 400
-    
+
     resp = client.get("/ocr/999.json")
     assert resp.status_code == 404
+
+def test_enqueue_rejects_unsafe_doc_id(client):
+    # Path-traversal and other non-numeric doc_ids are rejected at ingress,
+    # including a Unicode "digit" (U+0661) that str.isdigit() would accept.
+    for bad in ["../../etc/passwd", "111/../222", "abc", "1 1", "", "11١"]:
+        resp = client.post("/enqueue", json={"type": "ocr", "doc_id": bad, "payload": {}})
+        assert resp.status_code == 400, f"expected 400 for {bad!r}, got {resp.status_code}"
+
+    # None of the rejected ids created a job row.
+    from palimpsest.config import load
+    from palimpsest.db import connect
+    cfg = load()
+    conn = connect(cfg)
+    assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
 
