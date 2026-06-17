@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from palimpsest.config import load
 from palimpsest.db import connect
+from palimpsest.results import process_result
 
 cfg = load()
 
@@ -265,131 +266,17 @@ def complete(req: CompletePayload):
         if not job or job["lease_owner"] != req.worker_id or job["state"] != "leased":
             raise HTTPException(status_code=409, detail="Ownership mismatch or job not leased")
         
-        job_type = job["type"]
         doc_id = job["doc_id"]
         # Defense-in-depth: never build a storage path from an unsafe doc_id,
         # even if a row predates /enqueue validation.
         validate_doc_id(doc_id)
 
-        # Result handling (broker-side persistence)
-        if job_type == "ocr":
-            # Write ocr json file atomically
-            ocr_dir = cfg.storage_root / "ocr"
-            ocr_dir.mkdir(parents=True, exist_ok=True)
-            tmp_path = ocr_dir / f"{doc_id}.tmp"
-            dest_path = ocr_dir / f"{doc_id}.json"
-            tmp_path.write_text(json.dumps(req.result))
-            tmp_path.rename(dest_path)
-            
-            # Upsert pages rows
-            for page in req.result:
-                conn.execute(
-                    "INSERT OR REPLACE INTO pages (doc_id, page_no, width, height, ocr_source, text) VALUES (?, ?, ?, ?, ?, ?)",
-                    (doc_id, page["page_no"], page.get("width"), page.get("height"), page.get("ocr_source"), page["text"])
-                )
-            
-            # Update documents table
-            conn.execute(
-                "UPDATE documents SET status='ocr_done', ocr_at=?, page_count=? WHERE doc_id=?",
-                (now, len(req.result), doc_id)
-            )
-            
-            # Enqueue features job
-            try:
-                conn.execute(
-                    "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) VALUES ('features', ?, '{}', 'pending', 5, ?, ?)",
-                    (doc_id, now, now)
-                )
-            except sqlite3.IntegrityError:
-                conn.execute(
-                    "UPDATE jobs SET state='pending', updated_at=? WHERE type='features' AND doc_id=?",
-                    (now, doc_id)
-                )
-            
-        elif job_type == "features":
-            # Write features json file atomically
-            feat_dir = cfg.storage_root / "features"
-            feat_dir.mkdir(parents=True, exist_ok=True)
-            tmp_path = feat_dir / f"{doc_id}.tmp"
-            dest_path = feat_dir / f"{doc_id}.json"
-            tmp_path.write_text(json.dumps(req.result))
-            tmp_path.rename(dest_path)
-            
-            # Delete old redactions & entities for doc
-            # First need to find all page_nos to avoid FK issues, or just delete directly since documents table has pages
-            conn.execute("DELETE FROM redactions WHERE doc_id=?", (doc_id,))
-            conn.execute("DELETE FROM entities WHERE doc_id=?", (doc_id,))
-            
-            # Insert redactions
-            for red in req.result.get("redactions", []):
-                # bbox = [x0, y0, x1, y1]
-                bbox = red.get("bbox", [None, None, None, None])
-                conn.execute(
-                    "INSERT INTO redactions (doc_id, page_no, kind, label, x0, y0, x1, y1, context_before, context_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (doc_id, red["page_no"], red["kind"], red.get("label"), bbox[0], bbox[1], bbox[2], bbox[3], red.get("context_before"), red.get("context_after"))
-                )
-                
-            # Insert entities
-            for ent in req.result.get("entities", []):
-                bbox = ent.get("bbox", [None, None, None, None])
-                conn.execute(
-                    "INSERT INTO entities (doc_id, page_no, kind, text, norm, char_start, char_end, x0, y0, x1, y1) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (doc_id, ent["page_no"], ent["kind"], ent["text"], ent["norm"], ent.get("char_start"), ent.get("char_end"), bbox[0], bbox[1], bbox[2], bbox[3])
-                )
-                
-            # Update documents table
-            conn.execute(
-                "UPDATE documents SET status='features_done', features_at=? WHERE doc_id=?",
-                (now, doc_id)
-            )
-            
-            # Enqueue embed job
-            try:
-                conn.execute(
-                    "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) VALUES ('embed', ?, '{}', 'pending', 5, ?, ?)",
-                    (doc_id, now, now)
-                )
-            except sqlite3.IntegrityError:
-                conn.execute(
-                    "UPDATE jobs SET state='pending', updated_at=? WHERE type='embed' AND doc_id=?",
-                    (now, doc_id)
-                )
-            
-        elif job_type == "embed":
-            # Delete old chunks
-            conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
-            
-            # Insert chunks
-            chunks_data = req.result.get("chunks", [])
-            for ch in chunks_data:
-                # Upsert chunk
-                cur_chunk = conn.execute(
-                    "INSERT INTO chunks (doc_id, page_no, char_start, char_end, text) VALUES (?, ?, ?, ?, ?) RETURNING chunk_id",
-                    (doc_id, ch["page_no"], ch["char_start"], ch["char_end"], ch["text"])
-                )
-                chunk_id = cur_chunk.fetchone()["chunk_id"]
-                
-                # Append embedding to pending_embeddings.jsonl
-                index_dir = cfg.storage_root / "index"
-                index_dir.mkdir(parents=True, exist_ok=True)
-                with open(index_dir / "pending_embeddings.jsonl", "a") as f:
-                    f.write(json.dumps({"chunk_id": chunk_id, "embedding": ch["embedding"]}) + "\n")
-                    
-            # Update documents table
-            conn.execute(
-                "UPDATE documents SET status='indexed', indexed_at=? WHERE doc_id=?",
-                (now, doc_id)
-            )
-            
-        elif job_type == "extract":
-            # Stub persistence
-            ext_dir = cfg.storage_root / "features"
-            ext_dir.mkdir(parents=True, exist_ok=True)
-            dest_path = ext_dir / f"{doc_id}.extract.json"
-            dest_path.write_text(json.dumps(req.result))
-            
+        # Delegate type-specific persistence and pipeline chaining to the result
+        # processor; the broker only owns queue state and the transaction.
+        process_result(conn, cfg, job["type"], doc_id, req.result, now)
+
         conn.execute("UPDATE jobs SET state='done', updated_at=? WHERE job_id=?", (now, req.job_id))
-        
+
     return {"ok": True}
 
 @app.post("/fail")
