@@ -159,5 +159,13 @@
   6. broker reaper single-process file lock + locked-DB tolerance
   7. harvester explicit HTTP timeouts in request_with_retry
   8. indexer run_gapjoin scoring-loop query batching (behavior-preserving)
+- Completed task: all 8 hardening items landed on main (commits 10a5ec6, 9240710, f29c5d5, 481db4c, 02bc662, cfc985c, 4aa7e0e + baseline 3083f87). Highlights/decisions:
+  - #1: doc_id allowlist `^[0-9]+$` at /enqueue + /complete; unified GET endpoints off str.isdigit() (which accepts Unicode digits). New regression test.
+  - #2: persistence + pipeline chaining extracted to palimpsest/results.py; broker /complete is now a thin dispatcher. Kept broker as single SQLite writer (workers still POST results) — NOT moved into worker handlers, which would have broken the WAL single-writer model.
+  - #3/#4: server.py batched page-text via fetch_pages_text (row-value IN, PK index); mask_context_text now one compiled alternation regex (fail-closed).
+  - #5: orchestrator heartbeat uses Event.wait; SIGTERM no longer hangs up to 15 min. Also fixed 3 utcnow deprecations.
+  - #6: reaper gated by flock lock file (single reaper across uvicorn workers) + locked-DB tolerance; converted on_event→lifespan.
+  - #8: gapjoin scoring loop batched; verified bit-identical (30 scorer tests, cand5 score 0.899004989 unchanged).
+  - Verification: 190 tests green; ruff/ty clean on all edited source. Pre-existing (left as-is): indexer.py:619 & test_broker.py:73 E402 (intentional late/ordered imports), harvester.py:148 ty bs4 .get() overload (untouched code).
 
 
