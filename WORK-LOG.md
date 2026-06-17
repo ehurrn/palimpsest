@@ -147,4 +147,17 @@
 - Starting task: TASK-19 — Eval verification run
 - Completed task: TASK-19 — Eval verification run
 - Completed Phase 4 — Evaluation & Trust Gate implementation and verification. All tests pass, calibration artifact generated, server-side trust gate enforcement active.
+- Starting task: Syncing and configuring MacBook Pro (m5 at 192.168.0.63) as worker node.
+
+## 2026-06-17 (Hardening pass — Sentinel, on main)
+- Starting task: 8-item security/optimization/architecture hardening plan on broker.py, server.py, orchestrator.py, harvester.py, indexer.py. Working directly on main (user-approved). Baseline: 189 tests green.
+  1. broker path-traversal validation (doc_id allowlist at /enqueue + /complete)
+  2. decouple result persistence into palimpsest/results.py (broker becomes thin dispatcher; single-writer model preserved)
+  3. server.py N+1 page-text batching (find_redaction_gaps, search)
+  4. server.py mask_context_text single combined regex
+  5. orchestrator signal-handler hang (Event.wait instead of time.sleep)
+  6. broker reaper single-process file lock + locked-DB tolerance
+  7. harvester explicit HTTP timeouts in request_with_retry
+  8. indexer run_gapjoin scoring-loop query batching (behavior-preserving)
+
 

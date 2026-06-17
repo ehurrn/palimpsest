@@ -181,7 +181,7 @@ def run_investigate(config: Config, type_key: str, limit: int, output: Path | No
         f"type={type_key} limit={limit} -->\n"
     ]
     for i, cand in enumerate(candidates, start=1):
-        lines.append(f"---\n")
+        lines.append("---\n")
         lines.append(f"## Candidate {i} — {cand.type_key} (score={cand.score:.3f})\n")
         lines.append(f"**Summary:** {cand.summary}\n")
         lines.append(f"**Source documents:** {', '.join(cand.doc_ids)}\n")

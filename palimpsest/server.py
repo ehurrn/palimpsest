@@ -166,7 +166,7 @@ def get_citation(row: Dict[str, Any], prefix: str) -> Dict[str, Any]:
     }
 
 @mcp.tool()
-def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candidate", kind: str = None, limit: int = 20, min_tier: str = "surfaceable") -> str:
+def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candidate", kind: str | None = None, limit: int = 20, min_tier: str = "surfaceable") -> str:
     """List redaction gaps with scores above the threshold and masked person entities."""
     logger.info(f"Tool call: palimpsest_find_redaction_gaps(min_score={min_score}, status={status!r}, kind={kind!r}, limit={limit}, min_tier={min_tier!r})")
     
@@ -369,7 +369,7 @@ def palimpsest_search(query: str, limit: int = 10) -> str:
         return json.dumps({"error": str(e)})
 
 @mcp.tool()
-def palimpsest_get_document(doc_id: str, page_no: int = None) -> str:
+def palimpsest_get_document(doc_id: str, page_no: int | None = None) -> str:
     """Retrieve document details, page contents, and markers with person masking applied."""
     logger.info(f"Tool call: palimpsest_get_document(doc_id={doc_id!r}, page_no={page_no})")
     
@@ -461,7 +461,7 @@ def palimpsest_get_document(doc_id: str, page_no: int = None) -> str:
         return json.dumps({"error": str(e)})
 
 @mcp.tool()
-def palimpsest_get_entity(norm: str, kind: str = None, limit: int = 50) -> str:
+def palimpsest_get_entity(norm: str, kind: str | None = None, limit: int = 50) -> str:
     """Retrieve all occurrences of a normalized entity name with person masking applied."""
     logger.info(f"Tool call: palimpsest_get_entity(norm={norm!r}, kind={kind!r}, limit={limit})")
     
@@ -478,11 +478,11 @@ def palimpsest_get_entity(norm: str, kind: str = None, limit: int = 50) -> str:
         JOIN documents d ON e.doc_id = d.doc_id
         WHERE e.norm = ?
     """
-    params = [norm]
+    params: list[str | int] = [norm]
     if kind:
         query += " AND e.kind = ?"
         params.append(kind)
-        
+
     query += " LIMIT ?"
     params.append(limit)
     
