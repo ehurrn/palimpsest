@@ -1,10 +1,12 @@
 # palimpsest/broker.py
 import datetime
+import fcntl
 import json
 import re
 import sqlite3
 import threading
 import time
+from contextlib import asynccontextmanager
 from typing import Any, List
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -13,7 +15,6 @@ from pydantic import BaseModel
 from palimpsest.config import load
 from palimpsest.db import connect
 
-app = FastAPI()
 cfg = load()
 
 # doc_id is interpolated into filesystem paths (raw/, ocr/, features/ dirs), so
@@ -71,30 +72,42 @@ def utc_now_str() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 def reap_leases():
-    """Find leased jobs whose leases have expired and return them to pending or dead."""
+    """Find leased jobs whose leases have expired and return them to pending or dead.
+
+    Tolerates a transiently locked database (SQLite WAL contention) by skipping
+    the sweep instead of raising; the next tick retries.
+    """
     conn = connect(cfg)
     now = utc_now_str()
     max_attempts = cfg.broker["max_attempts"]
-    with conn:
-        # Get expired leases
-        cur = conn.execute(
-            "SELECT job_id, attempts FROM jobs WHERE state='leased' AND lease_expires_at < ?",
-            (now,)
-        )
-        expired = cur.fetchall()
-        for row in expired:
-            job_id = row["job_id"]
-            attempts = row["attempts"]
-            if attempts >= max_attempts:
-                conn.execute(
-                    "UPDATE jobs SET state='dead', error='Lease expired and max attempts exceeded', updated_at=? WHERE job_id=?",
-                    (now, job_id)
-                )
-            else:
-                conn.execute(
-                    "UPDATE jobs SET state='pending', updated_at=? WHERE job_id=?",
-                    (now, job_id)
-                )
+    try:
+        with conn:
+            # Get expired leases
+            cur = conn.execute(
+                "SELECT job_id, attempts FROM jobs WHERE state='leased' AND lease_expires_at < ?",
+                (now,)
+            )
+            expired = cur.fetchall()
+            for row in expired:
+                job_id = row["job_id"]
+                attempts = row["attempts"]
+                if attempts >= max_attempts:
+                    conn.execute(
+                        "UPDATE jobs SET state='dead', error='Lease expired and max attempts exceeded', updated_at=? WHERE job_id=?",
+                        (now, job_id)
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE jobs SET state='pending', updated_at=? WHERE job_id=?",
+                        (now, job_id)
+                    )
+    except sqlite3.OperationalError as e:
+        # "database is locked" / "database is busy" — transient; retry next tick.
+        if "lock" in str(e).lower() or "busy" in str(e).lower():
+            return
+        raise
+    finally:
+        conn.close()
 
 def reaper_loop():
     while True:
@@ -104,11 +117,48 @@ def reaper_loop():
             pass
         time.sleep(60)
 
-# Start reaper daemon thread on startup
-@app.on_event("startup")
-def startup_event():
-    thread = threading.Thread(target=reaper_loop, daemon=True)
-    thread.start()
+# Held open for the process lifetime to keep the cross-process reaper lock.
+_reaper_lock_handle = None
+
+
+def _acquire_reaper_lock() -> bool:
+    """Take an exclusive cross-process lock so only one process runs the reaper.
+
+    Under a multi-worker deployment (uvicorn/gunicorn --workers N) every process
+    would otherwise spawn its own reaper thread and contend on the SQLite WAL.
+    A non-blocking flock on a file under storage_root elects a single reaper.
+
+    Returns:
+        True if this process won the lock and should run the reaper; False if
+        another process already holds it.
+    """
+    global _reaper_lock_handle
+    lock_path = cfg.storage_root / "broker-reaper.lock"
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "w")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    _reaper_lock_handle = handle  # keep the fd open to hold the lock
+    return True
+
+
+# Start the reaper daemon thread on startup — but only on the single process
+# that wins the reaper lock.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if _acquire_reaper_lock():
+        thread = threading.Thread(target=reaper_loop, daemon=True)
+        thread.start()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 @app.post("/enqueue")
 def enqueue(job: EnqueuePayload):
