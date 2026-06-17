@@ -142,17 +142,66 @@ def mask_context_text(
     )
     entities = cur.fetchall()
 
+    # Map each non-approved person's surface text -> pseudonym. First occurrence
+    # of a given text wins, matching the prior sequential-substitution order.
+    replacements: dict[str, str] = {}
     for ent in entities:
-        approved = False
-        if ent["living_status"] == "deceased_historical":
-            approved = _is_approved(ent["entity_id"], conn, approved_ids)
+        approved = (
+            ent["living_status"] == "deceased_historical"
+            and _is_approved(ent["entity_id"], conn, approved_ids)
+        )
+        if approved or not ent["text"]:
+            continue
+        key = ent["text"].lower()
+        if key not in replacements:
+            replacements[key] = f"PERSON-{ent['entity_id']:04d}"
 
-        if not approved:
-            pseudonym = f"PERSON-{ent['entity_id']:04d}"
-            pattern = re.compile(r'\b' + re.escape(ent["text"]) + r'\b', re.IGNORECASE)
-            context = pattern.sub(pseudonym, context)
+    if not replacements:
+        return context
 
-    return context
+    # One compiled alternation instead of recompiling a regex per entity. Longest
+    # texts first so e.g. "John Smith" wins over "John" at the same position. The
+    # callback fails closed (a missed lookup still masks rather than leaking).
+    alternatives = sorted(replacements, key=lambda t: len(t), reverse=True)
+    pattern = re.compile(
+        r"\b(?:" + "|".join(re.escape(t) for t in alternatives) + r")\b",
+        re.IGNORECASE,
+    )
+    return pattern.sub(
+        lambda m: replacements.get(m.group(0).lower(), "PERSON-REDACTED"),
+        context,
+    )
+
+def fetch_pages_text(
+    conn: sqlite3.Connection,
+    pairs: set[tuple[str, int]],
+) -> dict[tuple[str, int], str | None]:
+    """Batch-load page text for many (doc_id, page_no) pairs in one query.
+
+    Replaces a per-row ``SELECT text FROM pages ...`` (an N+1) with a single
+    row-value ``IN (VALUES ...)`` lookup that uses the pages primary-key index.
+
+    Args:
+        conn: Read-only SQLite connection.
+        pairs: Distinct (doc_id, page_no) keys to fetch.
+
+    Returns:
+        Mapping of (doc_id, page_no) -> page text. Keys absent from the pages
+        table are simply omitted (callers default missing keys to "").
+    """
+    if not pairs:
+        return {}
+    flat: list[str | int] = []
+    for doc_id, page_no in pairs:
+        flat.append(doc_id)
+        flat.append(page_no)
+    placeholders = ",".join("(?,?)" for _ in pairs)
+    cur = conn.execute(
+        f"SELECT doc_id, page_no, text FROM pages WHERE (doc_id, page_no) IN (VALUES {placeholders})",
+        flat,
+    )
+    return {(row["doc_id"], row["page_no"]): row["text"] for row in cur.fetchall()}
+
 
 def get_citation(row: Dict[str, Any], prefix: str) -> Dict[str, Any]:
     """Helper to construct citation dict from query row."""
@@ -202,6 +251,10 @@ def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candi
         cur = conn.execute(query, params)
         rows = cur.fetchall()
         approved_ids = load_approved_person_ids(conn)
+        # Batch the clear-entity page-text lookups (one query, not one per row).
+        page_text = fetch_pages_text(
+            conn, {(row["e_doc_id"], row["e_page_no"]) for row in rows}
+        )
 
         from palimpsest.eval.gate import load_artifact, apply_gate
         _artifact = load_artifact(cfg)
@@ -220,10 +273,8 @@ def palimpsest_find_redaction_gaps(min_score: float = 0.65, status: str = "candi
             }
             masked_text = mask_person(ent_row, conn, approved_ids)
 
-            # Context for clear entity
-            cur_p = conn.execute("SELECT text FROM pages WHERE doc_id = ? AND page_no = ?", (row["e_doc_id"], row["e_page_no"]))
-            page_row = cur_p.fetchone()
-            p_text = page_row["text"] if page_row else ""
+            # Context for clear entity (page text from the batched lookup)
+            p_text = page_text.get((row["e_doc_id"], row["e_page_no"])) or ""
             masked_p_text = get_masked_text_for_page(row["e_doc_id"], row["e_page_no"], p_text, conn, approved_ids)
 
             c_start = row["e_char_start"]
@@ -332,6 +383,10 @@ def palimpsest_search(query: str, limit: int = 10) -> str:
         # Map row details by chunk_id
         row_map = {row["chunk_id"]: row for row in rows}
         approved_ids = load_approved_person_ids(conn)
+        # Batch the hit-chunk page-text lookups (one query, not one per hit).
+        page_text = fetch_pages_text(
+            conn, {(row["doc_id"], row["page_no"]) for row in rows}
+        )
 
         results = []
         for idx, cid in enumerate(indices[0]):
@@ -339,10 +394,8 @@ def palimpsest_search(query: str, limit: int = 10) -> str:
                 continue
             row = row_map[cid]
 
-            # Fetch and mask page text
-            cur_p = conn.execute("SELECT text FROM pages WHERE doc_id = ? AND page_no = ?", (row["doc_id"], row["page_no"]))
-            page_row = cur_p.fetchone()
-            p_text = page_row["text"] if page_row else ""
+            # Mask page text (page text from the batched lookup)
+            p_text = page_text.get((row["doc_id"], row["page_no"])) or ""
             masked_p_text = get_masked_text_for_page(row["doc_id"], row["page_no"], p_text, conn, approved_ids)
             
             c_start = row["char_start"]
