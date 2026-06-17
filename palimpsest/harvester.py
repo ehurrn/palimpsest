@@ -29,7 +29,18 @@ def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) ->
     global consecutive_403_count
     backoff = cfg.harvest["backoff_initial_s"]
     max_backoff = cfg.harvest["backoff_max_s"]
-    
+
+    # Explicit timeout so a hung OSTI socket cannot stall the harvester forever.
+    # `read` bounds the gap between received bytes (not total transfer time), so
+    # large PDFs that keep streaming still download; a silent server trips it.
+    kwargs.setdefault(
+        "timeout",
+        httpx.Timeout(
+            cfg.harvest.get("read_timeout_s", 30.0),
+            connect=cfg.harvest.get("connect_timeout_s", 10.0),
+        ),
+    )
+
     while True:
         rate_limit_sleep(cfg.harvest["rate_limit_rps"])
         try:
