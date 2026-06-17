@@ -3,6 +3,7 @@ import argparse
 import datetime
 import json
 import logging
+import sqlite3
 from typing import Callable, List
 import faiss
 import numpy as np
@@ -130,6 +131,70 @@ def build_index(cfg: Config):
         f.truncate(0)
         
     logger.info("Index build completed successfully.")
+
+def _fetch_entities_by_page(
+    conn: sqlite3.Connection, pages: set[tuple[str, int]]
+) -> dict[tuple[str, int], list[sqlite3.Row]]:
+    """Bulk-load entities grouped by (doc_id, page_no).
+
+    Replaces the per-candidate entity SELECTs in run_gapjoin's scoring loop (an
+    N+1 over candidates) with a single row-value ``IN (VALUES ...)`` query over
+    every page being scored. Rows are ordered by entity_id within each page to
+    match the insertion-order scan the per-page queries previously returned.
+
+    Args:
+        conn: Active SQLite connection.
+        pages: Distinct (doc_id, page_no) keys to load.
+
+    Returns:
+        Mapping of (doc_id, page_no) -> list of entity rows on that page.
+    """
+    by_page: dict[tuple[str, int], list[sqlite3.Row]] = {}
+    if not pages:
+        return by_page
+    flat: list[str | int] = []
+    for doc_id, page_no in pages:
+        flat.append(doc_id)
+        flat.append(page_no)
+    placeholders = ",".join("(?,?)" for _ in pages)
+    cur = conn.execute(
+        "SELECT entity_id, doc_id, page_no, kind, text, norm, char_start, char_end "
+        f"FROM entities WHERE (doc_id, page_no) IN (VALUES {placeholders}) "
+        "ORDER BY entity_id",
+        flat,
+    )
+    for row in cur.fetchall():
+        by_page.setdefault((row["doc_id"], row["page_no"]), []).append(row)
+    return by_page
+
+
+def _fetch_chunks_by_page(
+    conn: sqlite3.Connection, pages: set[tuple[str, int]]
+) -> dict[tuple[str, int], list[sqlite3.Row]]:
+    """Bulk-load chunk spans grouped by (doc_id, page_no), ordered by chunk_id.
+
+    Lets the scoring loop find the first chunk covering an entity span in memory
+    (replicating the old ``... LIMIT 1`` query) instead of one SELECT per
+    anchor-only candidate.
+    """
+    by_page: dict[tuple[str, int], list[sqlite3.Row]] = {}
+    if not pages:
+        return by_page
+    flat: list[str | int] = []
+    for doc_id, page_no in pages:
+        flat.append(doc_id)
+        flat.append(page_no)
+    placeholders = ",".join("(?,?)" for _ in pages)
+    cur = conn.execute(
+        "SELECT chunk_id, doc_id, page_no, char_start, char_end "
+        f"FROM chunks WHERE (doc_id, page_no) IN (VALUES {placeholders}) "
+        "ORDER BY chunk_id",
+        flat,
+    )
+    for row in cur.fetchall():
+        by_page.setdefault((row["doc_id"], row["page_no"]), []).append(row)
+    return by_page
+
 
 def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = get_ollama_embedding):
     """Run the redaction-gap join algorithm."""
@@ -325,6 +390,17 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
 
                                         
         # 5. Score Candidates
+        # Pre-fetch entities + chunks for every page we'll score against (all
+        # candidate pages plus the redaction's own page) in two bulk queries,
+        # so the loop below does in-memory lookups instead of per-candidate SQL.
+        scoring_pages: set[tuple[str, int]] = {
+            (cand["entity"]["doc_id"], cand["entity"]["page_no"])
+            for cand in candidates.values()
+        }
+        scoring_pages.add((r["doc_id"], r["page_no"]))
+        entities_by_page = _fetch_entities_by_page(conn, scoring_pages)
+        chunks_by_page = _fetch_chunks_by_page(conn, scoring_pages)
+
         scored_candidates: list[dict] = []
         for eid, cand in list(candidates.items()):
             e = cand["entity"]
@@ -332,12 +408,19 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
             # score_cosine: if not computed (anchor-only candidate), try to find its chunk and get cosine
             sc_cosine = cand["score_cosine"]
             if sc_cosine is None:
-                # Find chunk covering this entity's span
-                cur = conn.execute(
-                    "SELECT chunk_id FROM chunks WHERE doc_id = ? AND page_no = ? AND char_start <= ? AND char_end >= ? LIMIT 1",
-                    (e["doc_id"], e["page_no"], e["char_start"], e["char_end"])
-                )
-                chunk_row = cur.fetchone()
+                # Find the first chunk covering this entity's span (matches the
+                # old "... LIMIT 1" first-match over chunk_id order).
+                chunk_row = None
+                if e["char_start"] is not None and e["char_end"] is not None:
+                    for ch in chunks_by_page.get((e["doc_id"], e["page_no"]), []):
+                        if (
+                            ch["char_start"] is not None
+                            and ch["char_end"] is not None
+                            and ch["char_start"] <= e["char_start"]
+                            and ch["char_end"] >= e["char_end"]
+                        ):
+                            chunk_row = ch
+                            break
                 if chunk_row:
                     try:
                         chunk_id = int(chunk_row["chunk_id"])
@@ -362,8 +445,10 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                     sc_cosine = 0.0
             
             # score_anchor
-            cur = conn.execute("SELECT DISTINCT norm FROM entities WHERE doc_id = ? AND page_no = ?", (e["doc_id"], e["page_no"]))
-            anchors_on_e_page = set(row["norm"] for row in cur.fetchall())
+            anchors_on_e_page = {
+                ent["norm"]
+                for ent in entities_by_page.get((e["doc_id"], e["page_no"]), [])
+            }
             intersection = A.intersection(anchors_on_e_page)
             sc_anchor = len(intersection) / max(len(A), 1.0)
             sc_anchor = min(sc_anchor, 1.0)
@@ -378,14 +463,15 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
             tot_score = w_cosine * sc_cosine + w_anchor * sc_anchor + w_kind * sc_kind
             
             if e["kind"] == "dosage":
+                # subject_ref/person entities on the candidate's page (in memory)
+                subj_person_cand = [
+                    ent
+                    for ent in entities_by_page.get((e["doc_id"], e["page_no"]), [])
+                    if ent["kind"] in ("subject_ref", "person")
+                ]
                 # Proximity score check: nearest subject_ref or person on candidate page
-                cur_other = conn.execute(
-                    "SELECT char_start, char_end FROM entities WHERE doc_id = ? AND page_no = ? AND kind IN ('subject_ref', 'person')",
-                    (e["doc_id"], e["page_no"])
-                )
-                other_ents = cur_other.fetchall()
                 min_dist = None
-                for o in other_ents:
+                for o in subj_person_cand:
                     o_start = o["char_start"]
                     o_end = o["char_end"]
                     if o_start is None or o_end is None or e["char_start"] is None or e["char_end"] is None:
@@ -396,40 +482,36 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                         dist = min(abs(e["char_start"] - o_end), abs(o_start - e["char_end"]))
                     if min_dist is None or dist < min_dist:
                         min_dist = dist
-                
+
                 proximity_score = 0.0
                 if min_dist is not None:
                     proximity_score = math.exp(-min_dist / 500)
-                
+
                 tot_score += 0.1 * proximity_score
-                
+
                 # Check subject reference co-occurrence on both candidate and redaction pages
-                cur_c = conn.execute(
-                    "SELECT norm FROM entities WHERE doc_id = ? AND page_no = ? AND kind IN ('subject_ref', 'person')",
-                    (e["doc_id"], e["page_no"])
-                )
-                cand_subj = {row["norm"] for row in cur_c.fetchall()}
-                
-                cur_r = conn.execute(
-                    "SELECT norm FROM entities WHERE doc_id = ? AND page_no = ? AND kind IN ('subject_ref', 'person')",
-                    (r["doc_id"], r["page_no"])
-                )
-                red_subj = {row["norm"] for row in cur_r.fetchall()}
-                
+                cand_subj = {ent["norm"] for ent in subj_person_cand}
+
+                red_page_ents = entities_by_page.get((r["doc_id"], r["page_no"]), [])
+                red_subj = {
+                    ent["norm"]
+                    for ent in red_page_ents
+                    if ent["kind"] in ("subject_ref", "person")
+                }
+
                 if cand_subj & red_subj:
                     tot_score += 0.15
-                    
-                # Check dosage value match
-                cur_d = conn.execute(
-                    "SELECT 1 FROM entities WHERE doc_id = ? AND page_no = ? AND kind = 'dosage' AND norm = ? LIMIT 1",
-                    (r["doc_id"], r["page_no"], e["norm"])
+
+                # Check dosage value match on the redaction page
+                has_red_dosage = any(
+                    ent["kind"] == "dosage" and ent["norm"] == e["norm"]
+                    for ent in red_page_ents
                 )
-                has_red_dosage = cur_d.fetchone() is not None
-                
+
                 in_context = (e["norm"] in ctx_before.lower()) or (e["norm"] in ctx_after.lower())
                 if has_red_dosage or in_context:
                     tot_score += 0.15
-                    
+
                 tot_score = min(tot_score, 1.0)
                 
             scored_candidates.append({
