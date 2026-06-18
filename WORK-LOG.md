@@ -169,3 +169,14 @@
   - Verification: 190 tests green; ruff/ty clean on all edited source. Pre-existing (left as-is): indexer.py:619 & test_broker.py:73 E402 (intentional late/ordered imports), harvester.py:148 ty bs4 .get() overload (untouched code).
 
 
+
+## 2026-06-18 (Orchestrator heartbeat + diagnostics — Sentinel, on main)
+- Starting task: fix silent bugs in orchestrator heartbeat + 3 pre-existing lint/type diagnostics.
+- Completed task: 4 files changed in commit 68f3cce.
+  1. orchestrator.py `_check_queue_depth`: `status` → `state` (column does not exist in schema)
+  2. orchestrator.py `_check_candidate_counts`: same `status` → `state` fix
+  3. orchestrator.py `_check_worker_liveness`: `data["workers"]` → `data["active_workers"]`; broker returns dict not list, so iterate `.items()` with `last_seen` string (not `w["last_heartbeat"]`)
+  4. harvester.py:148 ty no-matching-overload: `isinstance` narrowing before `re.search`
+  5. indexer.py:619 ruff E402: added to existing noqa comment
+  6. tests/test_broker.py: moved TestClient import to module top, removed mid-file duplicate
+  190 tests green; ruff/ty clean on all edited files.
