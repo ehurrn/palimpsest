@@ -1,7 +1,9 @@
 import os
-import pytest
 import json
 import time
+
+import pytest
+from fastapi.testclient import TestClient
 
 # Setup temp config before importing broker
 @pytest.fixture(scope="module", autouse=True)
@@ -69,8 +71,6 @@ def setup_config(tmp_path_factory):
     
     yield cfg_file
 
-# Now import TestClient and app
-from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client():

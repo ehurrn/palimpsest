@@ -32,7 +32,7 @@ def _check_queue_depth(conn, config: Config) -> int:
     """Return count of pending jobs. Logs a warning if below low-water mark."""
     low_water = int(config.orchestrator.get("queue_low_water_mark", 100))
     count = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE status = 'pending'"
+        "SELECT COUNT(*) FROM jobs WHERE state = 'pending'"
     ).fetchone()[0]
     if count < low_water:
         logger.warning(
@@ -58,7 +58,7 @@ def _check_candidate_counts(
         try:
             count = conn.execute(
                 f"SELECT COUNT(*) FROM {scorer.candidates_table} "
-                f"WHERE status = 'candidate'"
+                f"WHERE state = 'candidate'"
             ).fetchone()[0]
             current[key] = count
             prev = last_counts.get(key, 0)
@@ -84,12 +84,13 @@ def _check_worker_liveness(config: Config) -> None:
         resp = httpx.get(f"{broker_url}/status", timeout=5.0)
         resp.raise_for_status()
         data = resp.json()
-        workers = data.get("workers", [])
+        # /status returns {"active_workers": {worker_id: last_seen_iso, ...}}
+        workers: dict[str, str] = data.get("active_workers", {})
         now = datetime.datetime.now(datetime.timezone.utc)
         alive = [
-            w for w in workers
-            if w.get("last_heartbeat") and
-            (now - datetime.datetime.fromisoformat(w["last_heartbeat"])).total_seconds() < 600
+            w_id for w_id, last_seen in workers.items()
+            if last_seen and
+            (now - datetime.datetime.fromisoformat(last_seen)).total_seconds() < 600
         ]
         if not alive:
             logger.warning(

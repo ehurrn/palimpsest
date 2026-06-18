@@ -144,7 +144,8 @@ def catalog(limit: int | None = None):
             title_a = title_col.find("a")
             if not title_a:
                 continue
-            href = title_a.get("href", "")
+            raw_href = title_a.get("href", "")
+            href = raw_href if isinstance(raw_href, str) else ""
             match_id = re.search(r'osti-id=(\d+)', href)
             if not match_id:
                 continue

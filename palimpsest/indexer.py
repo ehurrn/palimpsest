@@ -616,7 +616,7 @@ def run_outcome_gap(cfg: Config) -> None:
 
 
 # _edit_distance moved to palimpsest/scorers/type_c.py
-from palimpsest.scorers.type_c import _edit_distance  # noqa: F401  (re-exported for tests)
+from palimpsest.scorers.type_c import _edit_distance  # noqa: F401, E402
 
 
 def run_identity_link(cfg: Config) -> None:
