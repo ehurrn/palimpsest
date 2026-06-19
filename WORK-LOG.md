@@ -180,3 +180,15 @@
   5. indexer.py:619 ruff E402: added to existing noqa comment
   6. tests/test_broker.py: moved TestClient import to module top, removed mid-file duplicate
   190 tests green; ruff/ty clean on all edited files.
+
+## 2026-06-18 (Code review cleanup — Sentinel, on main)
+- Starting task: fix all findings from /engineering:code-review pass.
+- Completed task: 13 files, commit a2cf163.
+  1. eval/runner.py: raise RuntimeError if lastrowid is None (ty type error)
+  2. worker.py: timeout=10.0 on /complete and all /fail POST calls
+  3. preflight.py: removed unused MAX_SECONDS=300 and lease_ttl bindings
+  4. review.py: removed unused doc_id/page_no in review loop; unused entity_id in auto_review_deceased
+  5. tasks/__init__.py: removed unused Any import; noqa on embed side-effect import
+  6. scorers/type_b.py: removed unused get_ollama_embedding import
+  7. 7 test files: removed unused imports, split compound imports/semicolons, dropped unused result assignments
+  ruff: 0 errors (was 21). ty: 0 errors (was 1). 190 tests green.
