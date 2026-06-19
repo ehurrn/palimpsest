@@ -94,17 +94,15 @@ def rescue_doc(
     dry_run: bool,
 ) -> bool:
     """Re-enqueue, lease, OCR with Claude Vision, and complete one doc. Returns True on success."""
+    if dry_run:
+        print(f"  [{doc_id}] DRY RUN — would re-enqueue and process")
+        return True
+
     print(f"\n  [{doc_id}] Re-enqueuing...")
     enq = http.post(f"{broker_url}/enqueue", json={"type": "ocr", "doc_id": doc_id})
     if enq.status_code not in (200, 201):
         print(f"  [{doc_id}] Enqueue failed: {enq.status_code} {enq.text}")
         return False
-    job_id = enq.json()["job_id"]
-
-    if dry_run:
-        print(f"  [{doc_id}] DRY RUN — would process job {job_id}")
-        return True
-
     # Download PDF
     pdf_resp = http.get(f"{broker_url}/file/{doc_id}.pdf", timeout=120)
     if pdf_resp.status_code != 200:
