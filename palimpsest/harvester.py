@@ -190,14 +190,23 @@ def catalog(limit: int | None = None):
             print("Reached end of search results.")
             break
 
-def fetch(limit: int | None = None):
+def fetch(limit: int | None = None, min_id: int | None = None, max_id: int | None = None):
     conn = connect(cfg)
     cur = conn.cursor()
-    
-    # Select cataloged rows with fulltext
+
+    where = "status='cataloged' AND has_fulltext=1"
+    params: list[int] = []
+    if min_id is not None:
+        where += " AND CAST(doc_id AS INT) >= ?"
+        params.append(min_id)
+    if max_id is not None:
+        where += " AND CAST(doc_id AS INT) < ?"
+        params.append(max_id)
+    params.append(limit or 1_000_000)
+
     cur.execute(
-        "SELECT doc_id, source_url FROM documents WHERE status='cataloged' AND has_fulltext=1 ORDER BY doc_id ASC LIMIT ?",
-        (limit or 1000,)
+        f"SELECT doc_id, source_url FROM documents WHERE {where} ORDER BY doc_id ASC LIMIT ?",
+        params,
     )
     docs = cur.fetchall()
     
@@ -293,14 +302,16 @@ if __name__ == "__main__":
     
     fetch_parser = subparsers.add_parser("fetch", help="Download raw PDFs for cataloged documents")
     fetch_parser.add_argument("--limit", type=int, default=None, help="Max PDFs to fetch")
-    
+    fetch_parser.add_argument("--min-id", type=int, default=None, help="Only fetch docs with doc_id >= this value")
+    fetch_parser.add_argument("--max-id", type=int, default=None, help="Only fetch docs with doc_id < this value")
+
     status_parser = subparsers.add_parser("status", help="Show catalog status counts")
-    
+
     args = parser.parse_args()
-    
+
     if args.command == "catalog":
         catalog(limit=args.limit)
     elif args.command == "fetch":
-        fetch(limit=args.limit)
+        fetch(limit=args.limit, min_id=args.min_id, max_id=args.max_id)
     elif args.command == "status":
         status()
