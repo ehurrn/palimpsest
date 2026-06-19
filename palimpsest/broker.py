@@ -375,6 +375,16 @@ def get_file(doc_id: str):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path)
 
+@app.get("/jobs/dead")
+def list_dead_jobs(type: str = "ocr"):
+    """Return all dead job doc_ids for a given job type."""
+    conn = connect(cfg)
+    rows = conn.execute(
+        "SELECT DISTINCT doc_id FROM jobs WHERE state='dead' AND type=?", (type,)
+    ).fetchall()
+    return {"type": type, "doc_ids": [r["doc_id"] for r in rows], "count": len(rows)}
+
+
 @app.get("/ocr/{doc_id}.json")
 def get_ocr(doc_id: str):
     validate_doc_id(doc_id)
