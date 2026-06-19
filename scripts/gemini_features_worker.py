@@ -30,8 +30,10 @@ GEMINI_BIN = "/opt/homebrew/bin/gemini"
 MODEL = "gemini-3.1-flash-lite-preview"  # 4M ctx, 4M TPM
 WORKER_ID = "gemini-features"
 
-MAX_CHARS_PER_PAGE = 4000   # per-page cap; keeps very long pages from dominating
+MAX_CHARS_PER_PAGE = 4000  # per-page cap; keeps very long pages from dominating
 MAX_PROMPT_CHARS = 120_000  # hard cap per Gemini call; oversized batches are split
+# Max pages to include for a single doc — prevents a 200-page doc from filling the context alone
+_MAX_PAGES_PER_DOC = (MAX_PROMPT_CHARS - 2000) // (MAX_CHARS_PER_PAGE + 30)  # ~28 pages
 
 # ---------------------------------------------------------------------------
 # Prompt
@@ -109,7 +111,10 @@ def get_gemini_env() -> dict[str, str]:
         if zprofile.exists():
             r = subprocess.run(
                 f"source {zprofile} && printf '%s' \"$GEMINI_API_KEY\"",
-                shell=True, capture_output=True, text=True, executable="/bin/zsh",
+                shell=True,
+                capture_output=True,
+                text=True,
+                executable="/bin/zsh",
             )
             if r.stdout.strip():
                 env["GEMINI_API_KEY"] = r.stdout.strip()
@@ -119,7 +124,10 @@ def get_gemini_env() -> dict[str, str]:
 def call_gemini(prompt: str, env: dict[str, str]) -> str:
     r = subprocess.run(
         [GEMINI_BIN, "-p", prompt, "-m", MODEL],
-        capture_output=True, text=True, env=env, timeout=300,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
     )
     if r.returncode != 0:
         raise RuntimeError(f"gemini exit {r.returncode}: {r.stderr[:400]}")
@@ -136,8 +144,16 @@ def extract_json(text: str) -> dict:
     return json.loads(text[start : end + 1])
 
 
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def sanitize_text(t: str) -> str:
+    """Strip control characters that cause Gemini CLI (Node.js) encoding crashes."""
+    return _CONTROL_CHARS_RE.sub(" ", t)
+
+
 def page_text(page: dict) -> str:
-    t = page.get("text", "")
+    t = sanitize_text(page.get("text", ""))
     if len(t) > MAX_CHARS_PER_PAGE:
         t = t[:MAX_CHARS_PER_PAGE] + "\n[...truncated...]"
     return t
@@ -149,7 +165,7 @@ def build_batch_prompt(batch: list[tuple[str, list[dict]]]) -> str:
     for doc_id, pages in batch:
         parts.append(_DOC_SEPARATOR.format(doc_id=doc_id))
         for pg in pages:
-            parts.append(f"--- page {pg.get('page_no','?')} ---")
+            parts.append(f"--- page {pg.get('page_no', '?')} ---")
             parts.append(page_text(pg))
         parts.append(_DOC_END)
         parts.append("")
@@ -159,13 +175,22 @@ def build_batch_prompt(batch: list[tuple[str, list[dict]]]) -> str:
 def split_by_prompt_size(
     batch: list[tuple[str, list[dict]]],
 ) -> list[list[tuple[str, list[dict]]]]:
-    """Split a batch into sub-batches each under MAX_PROMPT_CHARS."""
+    """Split a batch into sub-batches each under MAX_PROMPT_CHARS.
+
+    Oversized single documents (more pages than fit in MAX_PROMPT_CHARS) are
+    truncated to _MAX_PAGES_PER_DOC so the Gemini call never exceeds the
+    character budget regardless of how many pages the doc has.
+    """
     system_len = len(_SYSTEM)
     chunks: list[list[tuple[str, list[dict]]]] = []
     current: list[tuple[str, list[dict]]] = []
     current_len = system_len
 
     for doc_id, pages in batch:
+        # Truncate very long docs so a single doc can never blow the prompt budget.
+        if len(pages) > _MAX_PAGES_PER_DOC:
+            pages = pages[:_MAX_PAGES_PER_DOC]
+
         doc_chars = sum(min(len(p.get("text", "")), MAX_CHARS_PER_PAGE) for p in pages)
         doc_chars += len(doc_id) + 60  # separators
 
@@ -258,9 +283,14 @@ def process_batch(
         try:
             resp = http.post(
                 f"{broker_url}/complete",
-                json={"job_id": job["job_id"], "worker_id": WORKER_ID,
-                      "result": {"entities": result.get("entities", []),
-                                 "redactions": result.get("redactions", [])}},
+                json={
+                    "job_id": job["job_id"],
+                    "worker_id": WORKER_ID,
+                    "result": {
+                        "entities": result.get("entities", []),
+                        "redactions": result.get("redactions", []),
+                    },
+                },
                 timeout=30,
             )
             if resp.status_code == 200:
@@ -280,8 +310,12 @@ def _fail_job(http: httpx.Client, broker_url: str, job: dict) -> None:
     try:
         http.post(
             f"{broker_url}/fail",
-            json={"job_id": job["job_id"], "worker_id": WORKER_ID,
-                  "error": "gemini extraction failed", "retryable": True},
+            json={
+                "job_id": job["job_id"],
+                "worker_id": WORKER_ID,
+                "error": "gemini extraction failed",
+                "retryable": True,
+            },
             timeout=10,
         )
     except httpx.RequestError:
@@ -309,8 +343,7 @@ def thread_loop(
         try:
             r = http.post(
                 f"{broker_url}/lease",
-                json={"worker_id": WORKER_ID, "capabilities": ["features"],
-                      "max_jobs": batch_size},
+                json={"worker_id": WORKER_ID, "capabilities": ["features"], "max_jobs": batch_size},
                 timeout=10,
             )
         except httpx.ConnectError as exc:
@@ -353,12 +386,13 @@ def thread_loop(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--concurrency", type=int, default=4,
-                        help="Parallel Gemini subprocesses (default 4)")
-    parser.add_argument("--batch-size", type=int, default=15,
-                        help="Docs per Gemini call (default 15)")
-    parser.add_argument("--loop", action="store_true",
-                        help="Keep polling when queue is empty")
+    parser.add_argument(
+        "--concurrency", type=int, default=4, help="Parallel Gemini subprocesses (default 4)"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=15, help="Docs per Gemini call (default 15)"
+    )
+    parser.add_argument("--loop", action="store_true", help="Keep polling when queue is empty")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -377,8 +411,9 @@ def main() -> None:
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         futures = {
-            pool.submit(thread_loop, i, broker_url, args.batch_size,
-                        env, args.dry_run, args.loop): i
+            pool.submit(
+                thread_loop, i, broker_url, args.batch_size, env, args.dry_run, args.loop
+            ): i
             for i in range(args.concurrency)
         }
         total = 0
