@@ -14,7 +14,7 @@ UV="$(command -v uv)"
 CHECK_INTERVAL=90   # seconds between full-fleet checks
 STALE_SECS=300      # seconds of log silence → considered stuck
 
-GEMINI_WORKERS=3
+GEMINI_WORKERS=0  # set > 0 to re-enable
 GEMINI_BATCH=15
 
 GONKTOP="herren@192.168.0.58"
@@ -37,7 +37,7 @@ local_age() {
 remote_age() {
     local host="$1" f="$2"
     ssh -o BatchMode=yes -o ConnectTimeout=5 "$host" \
-        "[ -f '$f' ] && echo \$(( \$(date +%s) - \$(stat -c %Y '$f') )) || echo 9999" \
+        "python3 -c \"import os,time; print(int(time.time()-os.path.getmtime('$f')))\" 2>/dev/null || echo 9999" \
         2>/dev/null || echo 9999
 }
 
@@ -127,10 +127,23 @@ check_m4_worker() {
 }
 
 check_gemini_workers() {
+    [ "$GEMINI_WORKERS" -eq 0 ] && { log "Gemini workers: disabled"; return 0; }
     local pids count worst_age=0 age
     pids=$(pgrep -f "gemini_features_worker" 2>/dev/null || true)
     if [ -z "$pids" ]; then count=0
     else count=$(echo "$pids" | wc -l | tr -d ' '); fi
+
+    # Trim excess workers — keep only the GEMINI_WORKERS youngest PIDs
+    if [ "$count" -gt "$GEMINI_WORKERS" ]; then
+        local excess keep_pids kill_pids
+        # Sort PIDs descending (highest = most recently started), keep first N
+        keep_pids=$(echo "$pids" | sort -rn | head -n "$GEMINI_WORKERS")
+        kill_pids=$(echo "$pids" | sort -rn | tail -n +$(( GEMINI_WORKERS + 1 )))
+        log "Gemini workers: trimming $count → $GEMINI_WORKERS (killing: $(echo $kill_pids | tr '\n' ' '))"
+        echo "$kill_pids" | xargs kill 2>/dev/null || true
+        count=$GEMINI_WORKERS
+        pids=$keep_pids
+    fi
 
     for i in $(seq 1 "$GEMINI_WORKERS"); do
         age=$(local_age "/tmp/gemini-f${i}.log")
