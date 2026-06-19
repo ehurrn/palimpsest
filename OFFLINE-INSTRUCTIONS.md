@@ -1,303 +1,308 @@
-# Palimpsest — Offline Development Handoff
+# Palimpsest — Agent Onboarding & Development Handoff
 
-> **Last updated:** 2026-06-13  
-> Briefing for local Ollama models continuing work when cloud session limits are hit.  
-> MacBook Pro (m4) is the development machine. Broker + production DB live on **gonktop** (192.168.0.58).
+> **Last updated:** 2026-06-19
+> Briefing for any agent (local Ollama, Gemini, Claude) continuing work on this project.
+> Read this entire document before touching any code.
 
 ---
 
-## 1. Environment
+## 1. What This Project Does
 
-| Machine | Role | URL |
-|---------|------|-----|
-| MacBook Pro (m4) | Development, local worker | Ollama: http://localhost:11434 |
-| gonktop (192.168.0.58) | Broker (8077), DB, primary worker | Ollama: http://192.168.0.58:11434 |
+Palimpsest ingests declassified US nuclear test documents from OSTI OpenNet (NV* accession series),
+OCRs them, extracts entities, and finds six categories of investigative findings:
+
+- **Type a** — Text redacted in document A can be proven from unredacted text in document B
+- **Type b** — A radiation dose is redacted/anonymized but reconstructable from other records
+- **Type c** — An anonymous subject can be linked to a named individual via shared attributes
+- **Type d** — An experiment has initiation records but no follow-up outcome records (missing results)
+- **Type e** — A document cites a regulation but the cited activity appears to violate it
+- **Type f** — A document series is missing one or more entries (suppressed installment)
+
+No person's name is surfaced without explicit HITL approval. This is a hard invariant.
+
+---
+
+## 2. Machines & Roles
+
+| Machine | Role | Address |
+|---------|------|---------|
+| **gonktop** | Broker, SQLite DB, primary worker | 192.168.0.58 |
+| **M4** (Mac Mini) | Local worker, development | localhost |
+| **M5** (MacBook Pro) | Secondary worker (when available) | SSH required |
+
+**Broker:** `http://192.168.0.58:8077` — sole writer to the DB. Workers never open SQLite directly.
+**MCP server (read-only):** `http://192.168.0.58:8078`
+
+Worker capabilities per node (set in `config.toml`):
+```
+gonktop = ["ocr", "features", "embed", "gapjoin"]
+m4      = ["ocr", "features", "embed", "classify"]
+m5      = ["extract", "ocr", "features", "embed"]
+```
+
+---
+
+## 3. Environment
 
 **Always use `uv run`** — never bare `python` or `python3`:
+
 ```bash
 uv run python -m palimpsest.db migrate      # schema migration
 uv run pytest -x -q                         # run tests
-uv run ruff check palimpsest/               # lint
-uv run ty check palimpsest/<file>.py        # type check
+uv run ruff check palimpsest/               # lint (fix all warnings before committing)
+uv run ty check palimpsest/<file>.py        # type check (fix errors, no suppression)
 ```
 
-**Git:**
+**Git — work on main, push directly:**
 ```bash
 git pull origin main
 git push origin main
 # Remote: git@github.com:ehurrn/palimpsest.git
-# config.toml is gitignored — each host keeps its own, never overwrite
+# config.toml is gitignored — each host keeps its own copy, never overwrite
 ```
+
+**Before any merge from a worktree:** run `git status` first. agy (Gemini) leaves
+uncommitted changes on the main disk. Stash before merging, pop after.
 
 ---
 
-## 2. Local Ollama Models (MacBook Pro)
-
-| Model | Role |
-|-------|------|
-| `qwen3.6-heretic-27b:latest` | Lead architect / code generation |
-| `gemma-4-12b-it-abliterated:latest` | Instruction-following, code review |
-| `granite-4.1-8b-claude-opus-thinking:latest` | Step-by-step planning, debugging |
-| `lfm2-8b-qwen3.6-distill:latest` | Fast edits, unit test writing |
-| `nomic-embed-text:latest` | Chunk embeddings (pipeline use) |
-
-Check Ollama before starting:
-```bash
-ollama ps                                          # models in GPU memory
-ollama list                                        # all installed
-curl -s http://localhost:11434/api/tags | python3 -m json.tool
-```
-
-**Known issue:** `llama-server` binary was missing on m4 at some point. If embedding fails, reinstall Ollama (`brew reinstall ollama`) and re-pull `nomic-embed-text`.
-
----
-
-## 3. Architecture Overview
-
-```
-Harvester → Broker (8077, gonktop) → Workers
-                │
-                └── SQLite DB (gonktop ~/dev/palimpsest/db/)
-                        │
-                Tasks: ocr → features → embed
-                        │
-                Indexer: gapjoin / violationjoin / seriesjoin / outcomegap
-                        │
-                Review CLI (HITL gate)
-                        │
-                MCP Server (8078, read-only)
-```
-
-**Core modules:**
-- `palimpsest/broker.py` — FastAPI job queue (enqueue/lease/complete/fail/heartbeat)
-- `palimpsest/tasks/features.py` — NER + regex entity extraction
-- `palimpsest/indexer.py` — all join/scoring subcommands
-- `palimpsest/review.py` — HITL gate (people / gaps / heuristic / audit)
-- `palimpsest/server.py` — Read-only MCP server (masks non-approved persons)
-- `palimpsest/preflight.py` — 8-check preflight (run before any session)
-
----
-
-## 4. Current State (as of 2026-06-13)
-
-### Schema version
-**v5** is current. Always run `uv run python -m palimpsest.db migrate` before first use.
-
-Tables added in Phase 2:
-| Table | Type | Added in |
-|-------|------|----------|
-| `regulation_citations` | Type e violations | v3 |
-| `violation_candidates` | Type e violations | v3 |
-| `series_gap_candidates` | Type f series gaps | v4 |
-| `outcome_gap_candidates` | Type d outcome gaps | v5 |
-
-### Finding-type implementation status
-
-| Type | Name | Status |
-|------|------|--------|
-| **a** | Redacted-text corroboration | ✅ Phase 1 complete |
-| **b** | Undisclosed radiation dosage | ✅ Complete (`subject_ref` entity, dosage proximity scorer) |
-| **c** | Anonymous identity linkage | ❌ **Not started — next task** |
-| **d** | Outcome suppression gap | ✅ Complete (`outcome_ref` entity, `outcomegap` CLI, schema v5) |
-| **e** | Regulatory-violation citation | ✅ Complete (`reg_cite` entity, `violationjoin` CLI, schema v3) |
-| **f** | Document-series suppression | ✅ Complete (`seq_ref` entity, `seriesjoin` CLI, schema v4) |
-
-### Identity gate status
-**Enforced.** All person entities default to `potentially_living`. The bulk-approval bypass from Phase 1 has been reverted. No name surfaces without either:
-1. Individual HITL approval via `review people` + `approve <id>` setting `living_status='deceased_historical'`, OR
-2. The date heuristic: `review heuristic` clears entities where `doc_year - birth_year > 100` OR `doc_age > 75 years`.
-
-### Test suite
-**91 tests, all green** as of last push to `main`. Run before and after any changes:
-```bash
-uv run pytest -x -q
-```
-
----
-
-## 5. Safety Invariants — Never Violate
-
-1. **Provenance invariant**: every de-redaction claim cites `doc_id` + page number for BOTH the redacted source and the corroborating clear-text source. No citation = discard immediately.
-
-2. **Identity gate**: no plaintext person name in any output unless `living_status = 'deceased_historical'` AND `status = 'approved'` in `review_queue`, OR the heuristic subcommand has cleared them.
-
-3. **No direct DB write from workers**: all mutations go through the broker at `192.168.0.58:8077`. Workers never open the SQLite file directly.
-
-4. **Write to WORK-LOG.md**: log a "Starting X" entry when you begin a task and a "Completed X" entry when done. Read it first to avoid duplicating work.
-
----
-
-## 6. Before Starting Any Session
+## 4. Before Starting Any Session
 
 ```bash
-# 1. Read the log
-cat WORK-LOG.md | tail -30
+# 1. Read the log — check what's been done and claimed
+cat WORK-LOG.md | tail -40
 
-# 2. Pull latest
+# 2. Log that you're starting
+echo "- Starting <task>: <description>" >> WORK-LOG.md
+
+# 3. Pull latest
 git pull origin main
 
-# 3. Check schema
+# 4. Migrate schema
 uv run python -m palimpsest.db migrate
 
-# 4. Run tests
+# 5. Run tests (must be green before you touch anything)
 uv run pytest -x -q
 
-# 5. Preflight (checks broker, Ollama, spaCy, FAISS)
+# 6. Preflight (checks broker, Ollama, spaCy, FAISS index)
 uv run python -m palimpsest.preflight
 ```
 
+When you finish: log a "Completed X" entry to `WORK-LOG.md`, commit, and push.
+
 ---
 
-## 7. Next Task: Type c — Anonymous Subject Identity Linkage
+## 5. Current State (as of 2026-06-19)
 
-This is the **only remaining Phase 2 finding-type**. It is also the highest-risk because it requires the mandatory identity HITL gate.
+### Schema version
+**v6** is current. Run `uv run python -m palimpsest.db migrate` before first use.
 
-### Spec summary (full spec in `specs/FINDING-TYPES.md`)
+| Version | Table added | Finding type |
+|---------|-------------|--------------|
+| v3 | `regulation_citations`, `violation_candidates` | Type e |
+| v4 | `series_gap_candidates` | Type f |
+| v5 | `outcome_gap_candidates` | Type d |
+| v6 | `identity_link_candidates` | Type c |
 
-**What it finds:** A subject anonymized in one document (e.g. "Subject 3", "Patient A") who can be linked to a named individual in another document via shared non-identifying attributes: institution + year + role + diagnosis pattern.
+### Finding-type implementation status — ALL SIX COMPLETE
 
-**Detector (features.py):**  
-`subject_ref` entity kind is already implemented (from Type b). A page qualifies as a type-c candidate if it contains a `subject_ref` entity AND at least 2 of: `org`, `date`, `dosage`.
+| Type | Name | Status |
+|------|------|--------|
+| **a** | Redacted-text corroboration | ✅ Phase 1 |
+| **b** | Undisclosed radiation dosage | ✅ Phase 2 |
+| **c** | Anonymous identity linkage | ✅ Phase 2 |
+| **d** | Outcome suppression gap | ✅ Phase 2 |
+| **e** | Regulatory-violation citation | ✅ Phase 2 |
+| **f** | Document-series suppression | ✅ Phase 2 |
 
-**Corroboration rule (indexer.py):**  
-A second document contains a named `person` entity whose `org` + `date` attributes match the anonymous subject within fuzzy tolerances (same org norm within edit distance 2, same year ± 2). The linkage score formula:
+### Test suite
+**101 tests, all green** as of last push. Run before and after any changes.
+
+### Corpus ingestion (in progress as of 2026-06-19)
+The harvester is actively downloading the full NV* catalog from OSTI (87,000+ docs discovered,
+ingesting in batches). Workers on gonktop and M4 are processing OCR → features → embed
+continuously. The post-processing indexer pipeline (`violationjoin → build → gapjoin →
+seriesjoin → outcomegap → identitylink`) runs after each full queue drain.
+
+---
+
+## 6. Pipeline Flow
 
 ```
-score = org_match_score × 0.5 + date_proximity_score × 0.3 + dosage_match_bonus × 0.2
-```
-
-Where:
-- `org_match_score` = 1.0 if edit_distance(org_norm_a, org_norm_b) ≤ 2, else 0.0
-- `date_proximity_score` = max(0, 1 - abs(year_a - year_b) / 3)
-- `dosage_match_bonus` = 0.2 if both pages have a matching `dosage` norm, else 0.0
-
-Minimum threshold: `score ≥ 0.65`.
-
-**Identity gate:** Mandatory. The linkage is NEVER surfaced until the named person holds `status = 'approved'` AND `living_status = 'deceased_historical'` in `review_queue`.
-
-### Implementation steps
-
-**Step 1 — New DB table (indexer.py or db.py)**
-
-Add schema migration v6 (if not already present):
-```sql
-CREATE TABLE IF NOT EXISTS identity_link_candidates (
-    id              INTEGER PRIMARY KEY,
-    subject_doc_id  TEXT NOT NULL,
-    subject_page    INTEGER NOT NULL,
-    subject_ref     TEXT NOT NULL,          -- e.g. "Subject 3"
-    named_doc_id    TEXT NOT NULL,
-    named_page      INTEGER NOT NULL,
-    named_entity_id INTEGER,               -- FK to entities.id
-    org_match       REAL,
-    date_proximity  REAL,
-    dosage_bonus    REAL,
-    score           REAL,
-    status          TEXT DEFAULT 'candidate', -- candidate | verified | rejected
-    created_at      TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (named_entity_id) REFERENCES entities(id)
-);
-```
-
-Bump `EXPECTED_VERSION` in `preflight.py` to 6.
-
-**Step 2 — Scorer (indexer.py)**
-
-Add function `run_identity_link(cfg)`:
-```python
-def run_identity_link(cfg):
-    """Type c: match anonymous subject_ref pages to named person pages by org+date."""
-    # 1. Query all pages that have a subject_ref entity AND (org OR date OR dosage)
-    # 2. For each candidate page, retrieve its org/date/dosage normalized values
-    # 3. Query all pages that have a PERSON entity with approved living_status
-    # 4. For each (candidate_page, named_page) pair:
-    #    - compute org_match_score (edit distance on org norm)
-    #    - compute date_proximity_score
-    #    - compute dosage_match_bonus
-    #    - if score >= 0.65, insert into identity_link_candidates
-    # 5. Deduplicate by (subject_doc_id, subject_page, named_entity_id)
-```
-
-Add CLI subcommand `identitylink` (following the pattern of `violationjoin`, `seriesjoin`, `outcomegap`).
-
-**Step 3 — Review gate (review.py)**
-
-Add a `links` subcommand to `review.py` that:
-- Lists `identity_link_candidates` where `status = 'candidate'`
-- For each, checks that the named entity IS approved+deceased_historical before displaying ANY name
-- Allows `approve <id>` / `reject <id>` with a reason
-
-**Step 4 — Tests (tests/test_identity.py)**
-
-Required test cases:
-1. `test_org_match_score` — verify edit-distance scoring
-2. `test_date_proximity_score` — verify year-gap formula  
-3. `test_dosage_bonus` — verify bonus applies only when both pages have matching dosage norms
-4. `test_identity_link_below_threshold` — scores < 0.65 are not inserted
-5. `test_identity_link_requires_approved_person` — linkage only surfaces when person is approved
-
-**Step 5 — After implementation**
-```bash
-uv run pytest -x -q          # all tests green
-uv run ruff check palimpsest/
-git add -p
-git commit -m "feat: Type c identity linkage (run_identity_link, schema v6)"
-git push origin main
-# Update WORK-LOG.md
+OSTI OpenNet
+     │
+     ▼
+palimpsest.harvester catalog     ← pages all NV* accession docs into documents table
+palimpsest.harvester fetch       ← downloads PDFs, enqueues ocr jobs via broker
+     │
+     ▼  (broker at 192.168.0.58:8077)
+Workers: ocr → features → embed
+     │
+     ▼
+palimpsest.indexer violationjoin ← Type e: regulation citations vs. activity dates
+palimpsest.indexer build         ← rebuilds FAISS index from all embedded chunks
+palimpsest.indexer gapjoin       ← Type a: semantic search for corroborating text
+palimpsest.indexer seriesjoin    ← Type f: detect missing series installments
+palimpsest.indexer outcomegap    ← Type d: detect missing outcome reports
+palimpsest.indexer identitylink  ← Type c: link anonymous subjects to named persons
+     │
+     ▼
+palimpsest.review people/gaps/links  ← HITL gate (human approves before surfacing)
+     │
+     ▼
+palimpsest.server (port 8078)        ← read-only MCP server for investigators
 ```
 
 ---
 
-## 8. Infrastructure TODOs (lower priority than Type c)
+## 7. Core Modules
 
-- [ ] Re-enable `embed` capability for `m4` in `config.toml` once Ollama is verified healthy (see Section 2 known issue).
-- [ ] Scale harvester to retrieve remaining NV* accession series beyond current 1,000-doc sample.
-- [ ] Configure Lane A orchestrator on mesh broker (192.168.0.58:8766) for automated pipeline routing.
+| File | Purpose |
+|------|---------|
+| `palimpsest/broker.py` | FastAPI job queue: enqueue / lease / complete / fail / heartbeat |
+| `palimpsest/harvester.py` | CLI: catalog (scrape OSTI) + fetch (download PDFs) |
+| `palimpsest/worker.py` | Worker daemon: lease-execute loop with heartbeat + SIGTERM |
+| `palimpsest/tasks/ocr.py` | OCR: Vision → Tesseract fallback, confidence filter |
+| `palimpsest/tasks/features.py` | NER + 8 custom entity kinds (person, date, dosage, protocol_code, reg_cite, seq_ref, subject_ref, outcome_ref) |
+| `palimpsest/tasks/embed.py` | Chunk text → nomic-embed-text vectors → broker store |
+| `palimpsest/indexer.py` | All join/scoring subcommands + FAISS index build |
+| `palimpsest/review.py` | HITL gate: `people`, `gaps`, `links`, `heuristic`, `audit` |
+| `palimpsest/server.py` | Read-only MCP server, masks unapproved persons |
+| `palimpsest/preflight.py` | 8-check preflight: config, storage, DB, broker, worker, Ollama, spaCy, FAISS |
+| `palimpsest/db.py` | Schema migrations, WAL mode, FK enforcement |
+| `palimpsest/config.py` | Config loader (config.toml, gitignored per host) |
 
 ---
 
-## 9. Useful Commands Reference
+## 8. Entity Kinds
+
+All extracted by `palimpsest/tasks/features.py`:
+
+| Kind | Normalizer | Notes |
+|------|-----------|-------|
+| `person` | lowercase stripped | Gate: `potentially_living` by default |
+| `date` | YYYY-MM-DD | Parsed from many formats |
+| `dosage` | `<value> <unit>` | e.g. `1.2 rem` |
+| `protocol_code` | uppercase | e.g. `CAL-12`, `NV-032` |
+| `reg_cite` | uppercase stripped | e.g. `45 CFR 46`, `10 CFR 50` |
+| `seq_ref` | lowercase | Series references, e.g. `vol. 3`, `part ii` |
+| `subject_ref` | lowercase | Anonymized subjects: `subject 3`, `patient a` |
+| `outcome_ref` | `future_ref:<text>` or `outcome_ind:<text>` | `future_ref:` = expected-but-absent outcome |
+
+---
+
+## 9. Safety Invariants — Never Violate
+
+1. **Provenance invariant:** every de-redaction claim cites `doc_id` + page number for BOTH
+   the redacted source and the corroborating clear-text source. No citation = discard.
+
+2. **Identity gate:** no plaintext person name in any output unless `living_status = 'deceased_historical'`
+   AND `status = 'approved'` in `review_queue`, OR the heuristic subcommand has cleared them.
+   The gate applies in the MCP server, review CLI, and any output you generate.
+
+3. **No direct DB writes from workers:** all mutations go through the broker at `192.168.0.58:8077`.
+
+4. **WORK-LOG.md:** log "Starting X" when you begin, "Completed X" when done. Read it first.
+   agy (Gemini) also writes to this log — check before claiming a task.
+
+5. **`config.toml` is gitignored** — each host has its own. Never commit it. Never overwrite
+   another host's copy.
+
+---
+
+## 10. Key Config Values (config.toml)
+
+```toml
+[harvest]
+rate_limit_rps = 0.5          # OSTI download rate — do not increase
+accession_prefix = "NV"       # NV* series
+
+[gapjoin]
+score_threshold = 0.65        # minimum score for a gap candidate
+w_cosine = 0.5
+w_anchor = 0.3
+w_kind   = 0.2
+
+[embed]
+model = "nomic-embed-text"
+dim = 768
+chunk_chars = 800
+chunk_overlap = 150
+```
+
+All tunables live in config.toml. Do not hardcode thresholds in Python.
+
+---
+
+## 11. Useful Commands
 
 ```bash
 # Database
 uv run python -m palimpsest.db migrate
 uv run python -m palimpsest.db stats
 
-# Indexer join subcommands
-uv run python -m palimpsest.indexer gapjoin        # Type a
-uv run python -m palimpsest.indexer violationjoin  # Type e
-uv run python -m palimpsest.indexer seriesjoin     # Type f
-uv run python -m palimpsest.indexer outcomegap     # Type d
-# uv run python -m palimpsest.indexer identitylink # Type c (to be built)
+# Harvester
+uv run python -m palimpsest.harvester catalog          # scrape OSTI catalog
+uv run python -m palimpsest.harvester fetch --limit 50 # download PDFs, enqueue OCR
+uv run python -m palimpsest.harvester status           # doc counts by status
 
-# Review CLI
-uv run python -m palimpsest.review people          # list pending person reviews
-uv run python -m palimpsest.review gaps            # list gap candidates
-uv run python -m palimpsest.review heuristic       # apply date heuristic to clear old entities
-uv run python -m palimpsest.review audit           # audit log
+# Worker (start one per machine)
+uv run python -m palimpsest.worker --node m4           # or m5, gonktop
+
+# Indexer (run on gonktop after queue drains)
+uv run python -m palimpsest.indexer violationjoin
+uv run python -m palimpsest.indexer build
+uv run python -m palimpsest.indexer gapjoin
+uv run python -m palimpsest.indexer seriesjoin
+uv run python -m palimpsest.indexer outcomegap
+uv run python -m palimpsest.indexer identitylink
+uv run python -m palimpsest.indexer stats
+
+# Review CLI (HITL)
+uv run python -m palimpsest.review people              # list pending person reviews
+uv run python -m palimpsest.review gaps                # list gap candidates
+uv run python -m palimpsest.review links               # list identity link candidates
+uv run python -m palimpsest.review heuristic           # apply date heuristic
+uv run python -m palimpsest.review audit               # audit log
 
 # Preflight
 uv run python -m palimpsest.preflight
 
-# Worker (on gonktop)
-ssh herren@192.168.0.58 'tail -30 /tmp/palimpsest-worker.log'
-ssh herren@192.168.0.58 'curl -s http://localhost:8077/status'
+# Check broker from anywhere
+curl -s http://192.168.0.58:8077/status | python3 -m json.tool
 
-# Stats
-uv run python -m palimpsest.indexer stats
+# Check logs on gonktop
+ssh herren@192.168.0.58 'tail -30 /tmp/palimpsest-worker-gonktop.log'
+ssh herren@192.168.0.58 'tail -30 /tmp/harvest-fetch3.log'
+ssh herren@192.168.0.58 'tail -30 /tmp/postproc.log'
 ```
 
 ---
 
-## 10. Key Files
+## 12. Key Files
 
 | File | Purpose |
 |------|---------|
-| `WORK-LOG.md` | Session log — read first, write on start+finish |
+| `WORK-LOG.md` | Session log — read first, write on start + finish |
 | `HUMAN_DO_THIS.md` | Escalations requiring human action |
-| `TODO.md` | Prioritized task list |
 | `specs/FINDING-TYPES.md` | Full spec for all six finding-types |
-| `palimpsest-phase2-plan.md` | Phase 2 roadmap and blockers |
-| `config.toml` | Local config (gitignored) |
-| `reports/phase1-verification.md` | Phase 1 findings (two verified de-redactions) |
+| `specs/00-ARCHITECTURE.md` | System architecture decisions |
 | `deploy/GONKTOP-SETUP.md` | gonktop ops runbook |
+| `reports/phase1-verification.md` | Phase 1 findings (two verified de-redactions) |
+| `config.toml` | Local config (gitignored per host) |
+
+---
+
+## 13. What's Next
+
+Phase 2 implementation is complete. Ongoing work:
+
+1. **Corpus ingestion** — harvester is downloading the full NV* catalog (87k+ docs). Let it run.
+   The post-processing indexer pipeline fires automatically after each queue drain.
+
+2. **Review findings** — once ingestion stabilizes, run the review CLI to work through
+   gap candidates, violation candidates, series gaps, outcome gaps, and identity links.
+   Each finding needs human verification before it can be published.
+
+3. **Scheduled harvesting** — set up a periodic launchd/cron job on gonktop to run
+   `catalog` daily and `fetch --limit N` every few hours to pick up new OSTI releases.
