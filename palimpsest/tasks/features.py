@@ -138,14 +138,26 @@ def normalize_person(text: str) -> str:
     text = " ".join(text.split())
     if "," in text:
         parts = [p.strip() for p in text.split(",")]
-        if len(parts) == 2:
-            suffix_candidates = {"jr", "sr", "ii", "iii", "iv", "phd", "md", "esq", "jr.", "sr."}
-            if parts[1].lower() in suffix_candidates:
-                text = f"{parts[0]}, {parts[1]}"
+        suffix_candidates = {"jr", "sr", "ii", "iii", "iv", "phd", "md", "esq", "jr.", "sr."}
+        # Separate trailing suffixes from name parts
+        suffixes = []
+        name_parts = []
+        for i, p in enumerate(parts):
+            if i >= 1 and p.lower().rstrip(".") in {s.rstrip(".") for s in suffix_candidates}:
+                suffixes.append(p)
             else:
-                text = f"{parts[1]} {parts[0]}"
+                name_parts.append(p)
+        if len(name_parts) == 2:
+            # "Last, First" -> "First Last"
+            text = f"{name_parts[1]} {name_parts[0]}"
+        elif len(name_parts) == 1:
+            text = name_parts[0]
+        else:
+            # 3+ non-suffix parts: keep as-is but rejoin
+            text = " ".join(name_parts)
+        if suffixes:
+            text = f"{text}, {', '.join(suffixes)}"
 
-            
     title_pattern = re.compile(
         r'^(?:dr|mr|mrs|ms|lt|col|gen|capt|prof|major|colonel|general|captain|lieutenant)\.?\s+',
         re.IGNORECASE
@@ -357,7 +369,12 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
             
         page_text = "\n".join(line["text"] for line in page_lines)
         
-        # Keep track of line character offsets in page_text
+        # Keep track of line character offsets in page_text.
+        # NOTE: Multi-line entities (e.g. a long regulatory citation that
+        # wraps across OCR lines) will receive the bounding box of the
+        # line where the regex match *starts*.  This is expected for
+        # Phase 1 — downstream UI rendering should anticipate visually
+        # truncated highlighting for such entities.
         line_offsets = []
         current_offset = 0
         for line in page_lines:
@@ -606,6 +623,11 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                 seen_outcome_spans.add((char_start, char_end))
                 text = m.group(0)
                 norm = normalize("outcome_ref", text)
+                bbox = [0.0, 0.0, 1.0, 1.0]
+                for start, end, b in line_offsets:
+                    if start <= char_start <= end:
+                        bbox = b
+                        break
                 regex_entities.append({
                     "page_no": page_no,
                     "kind": "outcome_ref",
@@ -613,7 +635,7 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                     "norm": norm,
                     "char_start": char_start,
                     "char_end": char_end,
-                    "bbox": [None, None, None, None],
+                    "bbox": bbox,
                 })
 
         # seq_ref extraction

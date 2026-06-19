@@ -184,15 +184,11 @@ def investigate(accession: str, config: Config) -> Path:
         logger.info("investigate: running %s ...", type_key)
         try:
             scorer.run(conn, config)
-            top = scorer.top(conn, limit=5)
+            relevant = scorer.top(conn, limit=5, doc_ids=doc_ids)
         except Exception as exc:
             logger.error("investigate: scorer %s failed: %s", type_key, exc, exc_info=True)
             continue
 
-        relevant = [
-            c for c in top
-            if any(did in doc_ids for did in c.doc_ids)
-        ]
         if not relevant:
             continue
 

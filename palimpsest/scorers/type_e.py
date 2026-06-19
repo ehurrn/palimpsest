@@ -26,15 +26,21 @@ class TypeEScorer:
     type_key = "type_e"
     candidates_table = "violation_candidates"
 
-    def top(self, conn: sqlite3.Connection, limit: int = 20) -> list[Candidate]:
+    def top(self, conn: sqlite3.Connection, limit: int = 20, doc_ids: list[str] | None = None) -> list[Candidate]:
         """Return the top-scoring violation candidates from the DB."""
-        rows = conn.execute("""
+        query = """
             SELECT doc_id, page_no, reg_id, reg_cite_entity_id,
                    doc_year, violation_type, score
             FROM violation_candidates
-            ORDER BY score DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
+        """
+        params: list = []
+        if doc_ids:
+            placeholders = ",".join("?" for _ in doc_ids)
+            query += f" WHERE doc_id IN ({placeholders})"
+            params.extend(doc_ids)
+        query += " ORDER BY score DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
         results: list[Candidate] = []
         for row in rows:
             results.append(Candidate(

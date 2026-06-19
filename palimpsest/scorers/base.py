@@ -55,10 +55,20 @@ class Scorer(Protocol):
         """
         ...
 
-    def top(self, conn: sqlite3.Connection, limit: int) -> list[Candidate]:
+    def top(
+        self,
+        conn: sqlite3.Connection,
+        limit: int,
+        doc_ids: list[str] | None = None,
+    ) -> list[Candidate]:
         """Return the top-scoring existing candidates from *candidates_table*.
 
         Reads previously persisted rows (highest score first) and reconstructs
         them as Candidate objects for the orchestrator's investigate command.
+
+        If *doc_ids* is provided, only candidates that reference at least one
+        of those document IDs are returned.  The limit is applied **after**
+        the document filter so callers always receive up to *limit* relevant
+        results.
         """
         ...

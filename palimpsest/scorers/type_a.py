@@ -471,9 +471,9 @@ class TypeAScorer:
         logger.info("TypeAScorer.run() complete.")
         return inserted
 
-    def top(self, conn: sqlite3.Connection, limit: int = 20) -> list[Candidate]:
+    def top(self, conn: sqlite3.Connection, limit: int = 20, doc_ids: list[str] | None = None) -> list[Candidate]:
         """Return top-N gap candidates ordered by score DESC."""
-        rows = conn.execute(
+        base = (
             "SELECT gc.gap_id, gc.redaction_id, gc.clear_entity_id, gc.score, "
             "gc.method, r.doc_id AS red_doc_id, r.page_no AS red_page_no, "
             "e.doc_id AS ent_doc_id, e.page_no AS ent_page_no, "
@@ -482,9 +482,16 @@ class TypeAScorer:
             "JOIN redactions r ON gc.redaction_id = r.redaction_id "
             "JOIN entities e ON gc.clear_entity_id = e.entity_id "
             "WHERE gc.status = 'candidate' "
-            "ORDER BY gc.score DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        )
+        params: list = []
+        if doc_ids:
+            placeholders = ",".join("?" for _ in doc_ids)
+            base += f"AND (r.doc_id IN ({placeholders}) OR e.doc_id IN ({placeholders})) "
+            params.extend(doc_ids)
+            params.extend(doc_ids)
+        base += "ORDER BY gc.score DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(base, params).fetchall()
         return [self._row_to_candidate(row) for row in rows]
 
     def _row_to_candidate(self, row: sqlite3.Row) -> Candidate:

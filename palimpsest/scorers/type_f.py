@@ -29,15 +29,21 @@ class TypeFScorer:
     type_key = "type_f"
     candidates_table = "series_gap_candidates"
 
-    def top(self, conn: sqlite3.Connection, limit: int = 20) -> list[Candidate]:
+    def top(self, conn: sqlite3.Connection, limit: int = 20, doc_ids: list[str] | None = None) -> list[Candidate]:
         """Return the top-scoring series gap candidates from the DB."""
-        rows = conn.execute("""
+        query = """
             SELECT series_prefix, missing_number, missing_accession,
                    flanking_doc_id, ref_entity_id, score, status
             FROM series_gap_candidates
-            ORDER BY score DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
+        """
+        params: list = []
+        if doc_ids:
+            placeholders = ",".join("?" for _ in doc_ids)
+            query += f" WHERE flanking_doc_id IN ({placeholders})"
+            params.extend(doc_ids)
+        query += " ORDER BY score DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
         results: list[Candidate] = []
         for row in rows:
             eids = [row["ref_entity_id"]] if row["ref_entity_id"] else []
