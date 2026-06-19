@@ -102,7 +102,20 @@ def process_features(
         "UPDATE documents SET status='features_done', features_at=? WHERE doc_id=?",
         (now, doc_id),
     )
-    _enqueue_followon(conn, "embed", doc_id, now)
+    year_row = conn.execute("SELECT year FROM documents WHERE doc_id=?", (doc_id,)).fetchone()
+    doc_year = year_row["year"] if year_row else None
+    payload_json = json.dumps({"year": doc_year}) if doc_year is not None else "{}"
+    try:
+        conn.execute(
+            "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) "
+            "VALUES ('embed', ?, ?, 'pending', 5, ?, ?)",
+            (doc_id, payload_json, now, now),
+        )
+    except sqlite3.IntegrityError:
+        conn.execute(
+            "UPDATE jobs SET state='pending', payload=?, updated_at=? WHERE type='embed' AND doc_id=?",
+            (payload_json, now, doc_id),
+        )
 
 
 def process_embed(
@@ -111,6 +124,9 @@ def process_embed(
     """Persist chunks, append their embeddings to the pending index, mark indexed."""
     conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
 
+    doc_year: int | None = result.get("year")
+    shard_by = cfg.embed.get("shard_by")
+
     for ch in result.get("chunks", []):
         cur_chunk = conn.execute(
             "INSERT INTO chunks (doc_id, page_no, char_start, char_end, text) VALUES (?, ?, ?, ?, ?) RETURNING chunk_id",
@@ -118,7 +134,12 @@ def process_embed(
         )
         chunk_id = cur_chunk.fetchone()["chunk_id"]
 
-        index_dir = cfg.storage_root / "index"
+        if shard_by == "decade" and doc_year is not None:
+            decade = (doc_year // 10) * 10
+            index_dir = cfg.storage_root / "index" / "shards" / str(decade)
+        else:
+            index_dir = cfg.storage_root / "index"
+
         index_dir.mkdir(parents=True, exist_ok=True)
         with open(index_dir / "pending_embeddings.jsonl", "a") as f:
             f.write(json.dumps({"chunk_id": chunk_id, "embedding": ch["embedding"]}) + "\n")

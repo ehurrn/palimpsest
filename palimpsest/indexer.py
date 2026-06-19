@@ -44,31 +44,26 @@ def get_slot_expectation(kind: str, label: str) -> str | None:
             return "person"
     return None
 
-def build_index(cfg: Config):
-    """Fold pending_embeddings.jsonl into the FAISS index."""
-    index_dir = cfg.storage_root / "index"
-    index_dir.mkdir(parents=True, exist_ok=True)
-    
-    faiss_path = index_dir / "faiss.idx"
-    pending_path = index_dir / "pending_embeddings.jsonl"
-    processing_path = index_dir / "pending_embeddings.processing"
-    done_path = index_dir / "pending_embeddings.done"
-    
-    # Check if there are pending embeddings
+def _build_shard(shard_dir, cfg: Config) -> list[int]:
+    """Build/update FAISS index for one directory. Returns list of chunk_ids indexed."""
+    from pathlib import Path
+    shard_dir = Path(shard_dir)
+    faiss_path = shard_dir / "faiss.idx"
+    pending_path = shard_dir / "pending_embeddings.jsonl"
+    processing_path = shard_dir / "pending_embeddings.processing"
+    done_path = shard_dir / "pending_embeddings.done"
+
     if not pending_path.exists() or pending_path.stat().st_size == 0:
         if not processing_path.exists() or processing_path.stat().st_size == 0:
-            logger.info("No pending embeddings to index.")
-            return
+            return []
 
-    # Atomic transition to processing
     if pending_path.exists() and pending_path.stat().st_size > 0:
         if processing_path.exists():
             processing_path.unlink()
         pending_path.rename(processing_path)
-        
-    # Read the pending records
-    chunk_ids = []
-    embeddings = []
+
+    chunk_ids: list[int] = []
+    embeddings: list[list[float]] = []
     with open(processing_path, "r") as f:
         for line in f:
             if not line.strip():
@@ -76,61 +71,75 @@ def build_index(cfg: Config):
             rec = json.loads(line)
             chunk_ids.append(rec["chunk_id"])
             embeddings.append(rec["embedding"])
-            
+
     if not chunk_ids:
-        logger.info("No valid records found in processing file.")
         if processing_path.exists():
             processing_path.unlink()
-        return
-        
-    # Load or create FAISS index
+        return []
+
     if faiss_path.exists():
-        logger.info(f"Loading existing FAISS index from {faiss_path}")
         index = faiss.read_index(str(faiss_path))
     else:
-        logger.info("Creating new FAISS index.")
         index = faiss.IndexIDMap2(faiss.IndexFlatIP(cfg.embed.get("dim", 768)))
-        
-    # L2-normalize vectors for cosine similarity
+
     vecs = np.array(embeddings, dtype=np.float32)
     norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-    # Avoid division by zero
     vecs = np.where(norms > 0, vecs / norms, vecs)
-    
-    ids = np.array(chunk_ids, dtype=np.int64)
-    
-    # Add to index
-    index.add_with_ids(vecs, ids)
-    
-    # Save index
+    index.add_with_ids(vecs, np.array(chunk_ids, dtype=np.int64))
     faiss.write_index(index, str(faiss_path))
-    logger.info(f"Indexed {len(chunk_ids)} vectors. Saved to {faiss_path}")
-    
-    # Update documents status to 'indexed'
+
+    if done_path.exists():
+        done_path.unlink()
+    processing_path.rename(done_path)
+    pending_path.touch()
+    with open(pending_path, "w") as f:
+        f.truncate(0)
+
+    return chunk_ids
+
+
+def build_index(cfg: Config):
+    """Fold pending_embeddings.jsonl into FAISS, routing to decade shards when available."""
+    index_dir = cfg.storage_root / "index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+
+    all_chunk_ids: list[int] = []
+
+    shards_root = index_dir / "shards"
+    if shards_root.exists():
+        for shard_dir in sorted(shards_root.iterdir()):
+            if shard_dir.is_dir():
+                ids = _build_shard(shard_dir, cfg)
+                if ids:
+                    logger.info(f"Shard {shard_dir.name}: indexed {len(ids)} vectors.")
+                    all_chunk_ids.extend(ids)
+
+    legacy_ids = _build_shard(index_dir, cfg)
+    if legacy_ids:
+        logger.info(f"Legacy flat index: indexed {len(legacy_ids)} vectors.")
+        all_chunk_ids.extend(legacy_ids)
+
+    if not all_chunk_ids:
+        logger.info("No pending embeddings to index.")
+        return
+
     conn = connect(cfg)
-    placeholders = ",".join("?" for _ in chunk_ids)
-    cur = conn.execute(f"SELECT DISTINCT doc_id FROM chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
+    placeholders = ",".join("?" for _ in all_chunk_ids)
+    cur = conn.execute(
+        f"SELECT DISTINCT doc_id FROM chunks WHERE chunk_id IN ({placeholders})",
+        all_chunk_ids,
+    )
     doc_ids = [row["doc_id"] for row in cur.fetchall()]
-    
+
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with conn:
         for doc_id in doc_ids:
             conn.execute(
                 "UPDATE documents SET status='indexed', indexed_at=? WHERE doc_id=?",
-                (now, doc_id)
+                (now, doc_id),
             )
-            
-    # Rename processing to done (overwriting previous done file if any)
-    if done_path.exists():
-        done_path.unlink()
-    processing_path.rename(done_path)
-    
-    # Create empty pending file
-    pending_path.touch()
-    with open(pending_path, "w") as f:
-        f.truncate(0)
-        
-    logger.info("Index build completed successfully.")
+
+    logger.info(f"Index build completed. Total vectors indexed: {len(all_chunk_ids)}.")
 
 def _fetch_entities_by_page(
     conn: sqlite3.Connection, pages: set[tuple[str, int]]
@@ -199,14 +208,21 @@ def _fetch_chunks_by_page(
 def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = get_ollama_embedding):
     """Run the redaction-gap join algorithm."""
     conn = connect(cfg)
-    
-    # Load FAISS index
-    index_path = cfg.storage_root / "index" / "faiss.idx"
-    if not index_path.exists():
-        logger.error("FAISS index not found. Please run 'build' first.")
+
+    # Discover all shard indexes (decade shards first, then legacy flat)
+    shard_indexes: list[tuple[str, faiss.Index]] = []
+    shards_root = cfg.storage_root / "index" / "shards"
+    if shards_root.exists():
+        for shard_dir in sorted(shards_root.iterdir()):
+            idx_path = shard_dir / "faiss.idx"
+            if shard_dir.is_dir() and idx_path.exists():
+                shard_indexes.append((shard_dir.name, faiss.read_index(str(idx_path))))
+    legacy_path = cfg.storage_root / "index" / "faiss.idx"
+    if legacy_path.exists():
+        shard_indexes.append(("legacy", faiss.read_index(str(legacy_path))))
+    if not shard_indexes:
+        logger.error("No FAISS index found. Please run 'build' first.")
         return
-        
-    index = faiss.read_index(str(index_path))
     
     # Query redactions that have not yet been joined
     cur = conn.execute("""
@@ -328,13 +344,20 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
             ctx_emb = None
             
         if ctx_emb is not None:
-            # Query FAISS
+            # Multi-shard FAISS search with global top-K merge
             query_vec = np.array([ctx_emb], dtype=np.float32)
             norms = np.linalg.norm(query_vec, axis=1, keepdims=True)
             query_vec = np.where(norms > 0, query_vec / norms, query_vec)
-            
-            _D, _idx = index.search(query_vec, topk)
-            hit_chunk_ids = [int(cid) for cid in _idx[0] if cid != -1]
+
+            _all_pairs: list[tuple[float, int]] = []
+            for _, shard_idx in shard_indexes:
+                _D_s, _I_s = shard_idx.search(query_vec, topk)
+                for d, i in zip(_D_s[0], _I_s[0]):
+                    if i != -1:
+                        _all_pairs.append((float(d), int(i)))
+            _all_pairs.sort(key=lambda x: x[0], reverse=True)
+            _all_pairs = _all_pairs[:topk]
+            hit_chunk_ids = [i for _, i in _all_pairs]
             
             if hit_chunk_ids:
                 placeholders = ",".join("?" for _ in hit_chunk_ids)
@@ -360,10 +383,7 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                     )
                     candidate_entities_on_pages = cur.fetchall()
                     
-                    chunk_cosines = {}
-                    for idx, cid in enumerate(_idx[0]):
-                        if cid != -1:
-                            chunk_cosines[int(cid)] = float(_D[0][idx])
+                    chunk_cosines = {i: d for d, i in _all_pairs}
                             
                     for ent in candidate_entities_on_pages:
                         for ch in hit_chunks:
@@ -424,8 +444,16 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                 if chunk_row:
                     try:
                         chunk_id = int(chunk_row["chunk_id"])
-                        # Reconstruct chunk vector from FAISS
-                        chunk_vec = index.reconstruct(chunk_id)
+                        # Reconstruct chunk vector from whichever shard holds it
+                        chunk_vec = None
+                        for _, shard_idx in shard_indexes:
+                            try:
+                                chunk_vec = shard_idx.reconstruct(chunk_id)
+                                break
+                            except Exception:
+                                continue
+                        if chunk_vec is None:
+                            raise RuntimeError(f"chunk {chunk_id} not found in any shard")
                         # L2-normalize
                         norm_c = np.linalg.norm(chunk_vec)
                         if norm_c > 0:

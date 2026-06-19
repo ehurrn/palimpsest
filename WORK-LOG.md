@@ -1,5 +1,9 @@
 # Work Log
 
+## 2026-06-18
+- Starting TASK-20 Part B: Decade-sharded FAISS index. Files in scope: indexer.py (build_index, run_gapjoin), results.py (process_embed, process_features), tasks/embed.py (embed_task), config.toml ([embed]).
+- Completed TASK-20 Part B: FAISS index now sharded by decade. Added _build_shard helper; build_index scans shards/DECADE/ dirs then falls back to legacy faiss.idx. run_gapjoin discovers all shards at startup, merges search results globally, reconstructs vectors shard-by-shard. process_embed routes to shards/DECADE/ when year present, falls back to flat index/. process_features enqueues embed job with year in payload JSON. embed_task reads year from payload, returns it in result. config.toml [embed] shard_by = "decade". 5 new tests in tests/test_indexer_sharding.py; all 200 tests green.
+
 ## 2026-06-13
 - Starting task: Addressing code review on orchestrator.py (NameError), scorers/base.py + concrete scorers (Scorer protocol + missing candidates_table/top), indexer.py (undefined print_stats), harvester.py (hardcoded HUMAN_DO_THIS path), server.py (N+1 review_queue lookups in masking).
 - Completed code review fixes: (1) orchestrator `_check_candidate_counts` now takes `config: Config`; also fixed adjacent bug where SCORERS classes were used without instantiation (`SCORERS[k]()`), which broke `investigate`'s `scorer.top()`. (2) Added `candidates_table: str` + `top()` to Scorer protocol; added missing `candidates_table` to type_c/d/f and missing `top()` to type_c; typed registry as `dict[str, type[Scorer]]`. (3) Implemented `print_stats()` in indexer.py (pipeline/index/gapjoin/per-scorer metrics). (4) harvester writes HUMAN_DO_THIS.md to repo root via `Path(__file__).resolve().parent.parent` (not the hardcoded absolute path). (5) server.py masking now loads approved entity_ids once per tool call (`load_approved_person_ids`) and threads the set through all mask helpers + all 4 tools, eliminating the N+1. 150 tests green; ruff/ty clean on new code; `index stats` and `orchestrate investigate` smoke-tested.
@@ -197,3 +201,6 @@
 - Starting task: align apply_heuristic() to spec. Old version queries review_queue (should query entities), uses HEURISTIC (should be HEURISTIC_AUTO), UPDATEs existing rows (should INSERT new approved rows), has birth-year regex (spec: 75-year doc-age only). Plan file: docs/superpowers/plans/2026-06-18-task20-phase2-scaling-safety.md Part A.
 - Completed task: commit b2a030c.
   apply_heuristic rewritten: queries entities (not review_queue), single 75-year doc-age rule (birth-year regex removed), INSERTs new approved rows (HEURISTIC_AUTO), single transaction, deduped by norm. import re removed. test_heuristic_classification rewritten; 5 new spec tests added. 195 tests green (was 190).
+
+## 2026-06-18 (TASK-20 Part B — FAISS decade sharding — Sentinel, on main)
+- Starting task: shard FAISS index by decade to prevent RAM exhaustion on full corpus. Plan: docs/superpowers/plans/2026-06-18-task20-phase2-scaling-safety.md Part B. Files: config.toml, results.py, tasks/embed.py, indexer.py + new tests/test_indexer_sharding.py.

@@ -1,4 +1,5 @@
 # palimpsest/tasks/embed.py
+import json
 import logging
 import time
 import httpx
@@ -106,7 +107,14 @@ def embed_task(cfg: Config, job: dict) -> dict:
     """Worker task handler for generating embeddings."""
     doc_id = job["doc_id"]
     broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
-    
+
+    payload_raw = job.get("payload") or "{}"
+    try:
+        payload = json.loads(payload_raw) if isinstance(payload_raw, str) else (payload_raw or {})
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    doc_year: int | None = payload.get("year")
+
     # 1. Fetch OCR JSON from broker
     try:
         ocr_resp = httpx.get(f"{broker_url}/ocr/{doc_id}.json", timeout=30.0)
@@ -116,7 +124,7 @@ def embed_task(cfg: Config, job: dict) -> dict:
         ocr_data = ocr_resp.json()
     except httpx.HTTPError as e:
         raise Exception(f"Failed to fetch OCR JSON from broker: {e}")
-        
+
     # 2. Define embedding function via local Ollama API
     def ollama_embed(prompt: str) -> List[float]:
         try:
@@ -133,7 +141,9 @@ def embed_task(cfg: Config, job: dict) -> dict:
             return resp.json()["embedding"]
         except httpx.HTTPError as e:
             raise Exception(f"Ollama embedding API call failed: {e}")
-            
+
     # 3. Process
     result = process_embed(ocr_data, cfg, ollama_embed)
+    if doc_year is not None:
+        result["year"] = doc_year
     return result
