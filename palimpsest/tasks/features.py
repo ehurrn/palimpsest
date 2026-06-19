@@ -138,7 +138,7 @@ def normalize_person(text: str) -> str:
     text = " ".join(text.split())
     if "," in text:
         parts = [p.strip() for p in text.split(",")]
-        suffix_candidates = {"jr", "sr", "ii", "iii", "iv", "phd", "md", "esq", "jr.", "sr."}
+        suffix_candidates = {"jr", "sr", "ii", "iii", "iv", "phd", "md", "esq"}
         # Separate trailing suffixes from name parts
         suffixes = []
         name_parts = []
@@ -375,12 +375,37 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
         # line where the regex match *starts*.  This is expected for
         # Phase 1 — downstream UI rendering should anticipate visually
         # truncated highlighting for such entities.
+        import bisect
+        
         line_offsets = []
+        line_starts = []
         current_offset = 0
         for line in page_lines:
             l_len = len(line["text"])
             line_offsets.append((current_offset, current_offset + l_len, line["bbox"]))
+            line_starts.append(current_offset)
             current_offset += l_len + 1  # +1 for newline
+
+        def get_bbox_union(c_start: int, c_end: int) -> list[float]:
+            idx = bisect.bisect_right(line_starts, c_start) - 1
+            if idx < 0:
+                idx = 0
+            
+            x0, y0, x1, y1 = 1.0, 1.0, 0.0, 0.0
+            found = False
+            for i in range(idx, len(line_offsets)):
+                l_start, l_end, b = line_offsets[i]
+                if l_start <= c_end and l_end >= c_start:
+                    found = True
+                    x0 = min(x0, b[0])
+                    y0 = min(y0, b[1])
+                    x1 = max(x1, b[2])
+                    y1 = max(y1, b[3])
+                if l_start > c_end:
+                    break
+            if found:
+                return [x0, y0, x1, y1]
+            return [0.0, 0.0, 1.0, 1.0]
             
         # A. Redaction markers - text kinds
         for i, line in enumerate(page_lines):
@@ -547,11 +572,7 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
             text = m.group(0)
             norm = normalize("dosage", text)
             
-            bbox = [0.0, 0.0, 1.0, 1.0]
-            for start, end, b in line_offsets:
-                if start <= char_start <= end:
-                    bbox = b
-                    break
+            bbox = get_bbox_union(char_start, char_end)
                     
             regex_entities.append({
                 "page_no": page_no,
@@ -570,11 +591,7 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
             text = m.group(0)
             norm = normalize("protocol_code", text)
             
-            bbox = [0.0, 0.0, 1.0, 1.0]
-            for start, end, b in line_offsets:
-                if start <= char_start <= end:
-                    bbox = b
-                    break
+            bbox = get_bbox_union(char_start, char_end)
                     
             regex_entities.append({
                 "page_no": page_no,
@@ -598,11 +615,7 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                 seen_reg_spans.add((char_start, char_end))
                 text = m.group(0)
                 norm = normalize("reg_cite", text)
-                bbox = [0.0, 0.0, 1.0, 1.0]
-                for start, end, b in line_offsets:
-                    if start <= char_start <= end:
-                        bbox = b
-                        break
+                bbox = get_bbox_union(char_start, char_end)
                 regex_entities.append({
                     "page_no": page_no,
                     "kind": "reg_cite",
@@ -623,11 +636,7 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                 seen_outcome_spans.add((char_start, char_end))
                 text = m.group(0)
                 norm = normalize("outcome_ref", text)
-                bbox = [0.0, 0.0, 1.0, 1.0]
-                for start, end, b in line_offsets:
-                    if start <= char_start <= end:
-                        bbox = b
-                        break
+                bbox = get_bbox_union(char_start, char_end)
                 regex_entities.append({
                     "page_no": page_no,
                     "kind": "outcome_ref",
@@ -644,11 +653,7 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
             char_end = m.end()
             text = m.group(0)
             norm = normalize("seq_ref", text)
-            bbox = [0.0, 0.0, 1.0, 1.0]
-            for start, end, b in line_offsets:
-                if start <= char_start <= end:
-                    bbox = b
-                    break
+            bbox = get_bbox_union(char_start, char_end)
             regex_entities.append({
                 "page_no": page_no,
                 "kind": "seq_ref",
@@ -665,11 +670,7 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
             char_end = m.end()
             text = m.group(0)
             norm = normalize("subject_ref", text)
-            bbox = [0.0, 0.0, 1.0, 1.0]
-            for start, end, b in line_offsets:
-                if start <= char_start <= end:
-                    bbox = b
-                    break
+            bbox = get_bbox_union(char_start, char_end)
             regex_entities.append({
                 "page_no": page_no,
                 "kind": "subject_ref",
@@ -722,11 +723,7 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
 
                     if not overlap:
                         norm = normalize(spacy_kind, text)
-                        bbox = [0.0, 0.0, 1.0, 1.0]
-                        for start, end, b in line_offsets:
-                            if start <= char_start <= end:
-                                bbox = b
-                                break
+                        bbox = get_bbox_union(char_start, char_end)
 
                         entity_dict = {
                             "page_no": page_no,

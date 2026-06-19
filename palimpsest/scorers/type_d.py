@@ -31,19 +31,38 @@ class TypeDScorer:
 
     def top(self, conn: sqlite3.Connection, limit: int = 20, doc_ids: list[str] | None = None) -> list[Candidate]:
         """Return the top-scoring outcome gap candidates from the DB."""
-        query = """
+        if doc_ids is not None and not doc_ids:
+            return []
+
+        base = """
             SELECT protocol_code, initiation_doc_id, start_year,
                    future_ref_entity_id, score
             FROM outcome_gap_candidates
         """
-        params: list = []
-        if doc_ids:
-            placeholders = ",".join("?" for _ in doc_ids)
-            query += f" WHERE initiation_doc_id IN ({placeholders})"
-            params.extend(doc_ids)
-        query += " ORDER BY score DESC LIMIT ?"
-        params.append(limit)
-        rows = conn.execute(query, params).fetchall()
+
+        if doc_ids is None:
+            query = base + " ORDER BY score DESC LIMIT ?"
+            rows = conn.execute(query, [limit]).fetchall()
+        else:
+            chunk_size = 900
+            all_rows = []
+            for i in range(0, len(doc_ids), chunk_size):
+                chunk = doc_ids[i:i+chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                query = base + f" WHERE initiation_doc_id IN ({placeholders}) ORDER BY score DESC LIMIT ?"
+                params = chunk + [limit]
+                all_rows.extend(conn.execute(query, params).fetchall())
+
+            seen = set()
+            rows = []
+            for row in sorted(all_rows, key=lambda r: r["score"], reverse=True):
+                k = (row["protocol_code"], row["initiation_doc_id"])
+                if k not in seen:
+                    seen.add(k)
+                    rows.append(row)
+                    if len(rows) >= limit:
+                        break
+
         results: list[Candidate] = []
         for row in rows:
             eids = [row["future_ref_entity_id"]] if row["future_ref_entity_id"] else []
