@@ -31,6 +31,7 @@ MODEL = "gemini-3.1-flash-lite-preview"  # 4M ctx, 4M TPM
 WORKER_ID = "gemini-features"
 
 MAX_CHARS_PER_PAGE = 4000   # per-page cap; keeps very long pages from dominating
+MAX_PROMPT_CHARS = 120_000  # hard cap per Gemini call; oversized batches are split
 
 # ---------------------------------------------------------------------------
 # Prompt
@@ -155,6 +156,33 @@ def build_batch_prompt(batch: list[tuple[str, list[dict]]]) -> str:
     return "\n".join(parts)
 
 
+def split_by_prompt_size(
+    batch: list[tuple[str, list[dict]]],
+) -> list[list[tuple[str, list[dict]]]]:
+    """Split a batch into sub-batches each under MAX_PROMPT_CHARS."""
+    system_len = len(_SYSTEM)
+    chunks: list[list[tuple[str, list[dict]]]] = []
+    current: list[tuple[str, list[dict]]] = []
+    current_len = system_len
+
+    for doc_id, pages in batch:
+        doc_chars = sum(min(len(p.get("text", "")), MAX_CHARS_PER_PAGE) for p in pages)
+        doc_chars += len(doc_id) + 60  # separators
+
+        if current and current_len + doc_chars > MAX_PROMPT_CHARS:
+            chunks.append(current)
+            current = []
+            current_len = system_len
+
+        current.append((doc_id, pages))
+        current_len += doc_chars
+
+    if current:
+        chunks.append(current)
+
+    return chunks or [[]]
+
+
 # ---------------------------------------------------------------------------
 # Batch processing
 # ---------------------------------------------------------------------------
@@ -200,24 +228,26 @@ def process_batch(
             print(f"{tag}  DRY RUN [{doc_id}] {len(pages)}p")
         return len(batch), 0
 
-    prompt = build_batch_prompt(batch)
-    print(f"{tag}Gemini call — {len(prompt):,} chars")
+    # Split into sub-batches that each fit within MAX_PROMPT_CHARS
+    sub_batches = split_by_prompt_size(batch)
 
-    try:
-        raw = call_gemini(prompt, env)
-        data = extract_json(raw)
-    except Exception as exc:
-        print(f"{tag}Gemini error: {exc}")
-        for _, job in job_map.items():
-            _fail_job(http, broker_url, job)
-        return 0, len(batch)
-
-    # Index results by doc_id
     results: dict[str, dict] = {}
-    for entry in data.get("documents", []):
-        did = str(entry.get("doc_id", ""))
-        if did:
-            results[did] = entry
+    for sub in sub_batches:
+        prompt = build_batch_prompt(sub)
+        print(f"{tag}Gemini call — {len(sub)} docs, {len(prompt):,} chars")
+        try:
+            raw = call_gemini(prompt, env)
+            data = extract_json(raw)
+        except Exception as exc:
+            print(f"{tag}Gemini error: {exc}")
+            for doc_id, _ in sub:
+                _fail_job(http, broker_url, job_map[doc_id])
+            continue
+
+        for entry in data.get("documents", []):
+            did = str(entry.get("doc_id", ""))
+            if did:
+                results[did] = entry
 
     ok = failed = 0
     for doc_id, _ in batch:
