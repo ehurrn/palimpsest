@@ -1,13 +1,12 @@
 """Gemini-powered features extraction worker for palimpsest.
 
-Leases 'features' jobs from the broker, fetches the OCR JSON, sends the full
-document text to Gemini CLI for entity/redaction extraction, and completes the
-job via broker.
+Runs N concurrent threads, each independently leasing a features job,
+calling Gemini CLI for NER, and completing the job via the broker.
 
 GEMINI_API_KEY must be set in the environment (or in ~/.zprofile).
 
 Usage:
-    uv run python scripts/gemini_features_worker.py [--loop] [--dry-run] [--max-jobs N]
+    uv run python scripts/gemini_features_worker.py [--concurrency 20] [--dry-run]
 """
 
 import argparse
@@ -17,6 +16,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import httpx
@@ -25,12 +25,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from palimpsest.config import load as load_config  # noqa: E402
 
 GEMINI_BIN = "/opt/homebrew/bin/gemini"
-# 4 M context + 4 M TPM — ideal for bulk NER over long documents
-MODEL = "gemini-3.1-flash-lite-preview"
+MODEL = "gemini-3.1-flash-lite-preview"  # 4M ctx, 4M TPM — ideal for bulk NER
 WORKER_ID = "gemini-features"
 
-MAX_CHARS_PER_PAGE = 6000   # truncate runaway pages; keeps prompt sane
-MAX_PAGES_PER_CALL = 60     # pages per Gemini call; at 4M context this is plenty
+MAX_CHARS_PER_PAGE = 6000
 
 # ---------------------------------------------------------------------------
 # Prompt
@@ -106,7 +104,6 @@ Do not invent entities. Only extract what is present in the text.
 {pages_text}
 """
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -132,7 +129,7 @@ def get_gemini_env() -> dict[str, str]:
 
 
 def call_gemini(prompt: str, env: dict[str, str]) -> str:
-    """Invoke the Gemini CLI and return stdout (the model's response)."""
+    """Invoke the Gemini CLI and return stdout (the model response)."""
     result = subprocess.run(
         [GEMINI_BIN, "-p", prompt, "-m", MODEL],
         capture_output=True,
@@ -141,8 +138,8 @@ def call_gemini(prompt: str, env: dict[str, str]) -> str:
         timeout=180,
     )
     if result.returncode != 0:
-        stderr_snippet = result.stderr[:400] if result.stderr else "(no stderr)"
-        raise RuntimeError(f"gemini exited {result.returncode}: {stderr_snippet}")
+        snippet = result.stderr[:400] if result.stderr else "(no stderr)"
+        raise RuntimeError(f"gemini exited {result.returncode}: {snippet}")
     return result.stdout.strip()
 
 
@@ -159,7 +156,6 @@ def extract_json(text: str) -> dict:
 
 
 def build_pages_text(pages: list[dict]) -> str:
-    """Format OCR pages into a readable block for the prompt."""
     parts = []
     for page in pages:
         page_no = page.get("page_no", "?")
@@ -171,96 +167,175 @@ def build_pages_text(pages: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Core processing
+# Per-job processing (runs in a thread)
 # ---------------------------------------------------------------------------
 
 
-def process_doc(
+def process_one(
     http: httpx.Client,
     broker_url: str,
-    doc_id: str,
-    job_id: int,
+    job: dict,
     env: dict[str, str],
     dry_run: bool,
+    tag: str,
 ) -> bool:
-    """Fetch OCR, run Gemini extraction, complete the broker job."""
-    ocr_resp = http.get(f"{broker_url}/ocr/{doc_id}.json", timeout=30)
+    """Fetch OCR, run Gemini, complete job. Returns True on success."""
+    job_id = job["job_id"]
+    doc_id = job["doc_id"]
+
+    try:
+        ocr_resp = http.get(f"{broker_url}/ocr/{doc_id}.json", timeout=30)
+    except httpx.RequestError as exc:
+        print(f"{tag}[{doc_id}] OCR fetch error: {exc}")
+        return False
+
     if ocr_resp.status_code != 200:
-        print(f"  [{doc_id}] Cannot fetch OCR JSON: HTTP {ocr_resp.status_code}")
+        print(f"{tag}[{doc_id}] OCR not found: HTTP {ocr_resp.status_code}")
         return False
 
     pages = ocr_resp.json()
     if not isinstance(pages, list):
-        print(f"  [{doc_id}] OCR JSON is not a list")
+        print(f"{tag}[{doc_id}] OCR JSON is not a list")
         return False
 
-    print(f"  [{doc_id}] {len(pages)} OCR pages")
-
     if dry_run:
-        print(f"  [{doc_id}] DRY RUN — would call Gemini and complete job {job_id}")
+        print(f"{tag}[{doc_id}] DRY RUN — {len(pages)} pages, job {job_id}")
         return True
 
     all_entities: list[dict] = []
     all_redactions: list[dict] = []
 
-    for chunk_start in range(0, len(pages), MAX_PAGES_PER_CALL):
-        chunk = pages[chunk_start : chunk_start + MAX_PAGES_PER_CALL]
-        pages_text = build_pages_text(chunk)
-        prompt = _PROMPT_TEMPLATE.format(doc_id=doc_id, pages_text=pages_text)
-
-        p_start = chunk[0].get("page_no", chunk_start + 1)
-        p_end = chunk[-1].get("page_no", chunk_start + len(chunk))
-        print(
-            f"  [{doc_id}] Gemini call — pages {p_start}–{p_end}, "
-            f"prompt {len(prompt):,} chars"
+    for chunk_start in range(0, len(pages), 60):
+        chunk = pages[chunk_start : chunk_start + 60]
+        prompt = _PROMPT_TEMPLATE.format(
+            doc_id=doc_id, pages_text=build_pages_text(chunk)
         )
-
         try:
             raw = call_gemini(prompt, env)
             data = extract_json(raw)
         except Exception as exc:
-            print(f"  [{doc_id}] Gemini error on chunk {chunk_start}: {exc}")
+            print(f"{tag}[{doc_id}] Gemini error: {exc}")
             return False
 
         all_entities.extend(data.get("entities", []))
         all_redactions.extend(data.get("redactions", []))
 
     print(
-        f"  [{doc_id}] {len(all_entities)} entities, "
-        f"{len(all_redactions)} redactions — completing..."
+        f"{tag}[{doc_id}] {len(pages)}p → "
+        f"{len(all_entities)} entities, {len(all_redactions)} redactions"
     )
 
-    resp = http.post(
-        f"{broker_url}/complete",
-        json={
-            "job_id": job_id,
-            "worker_id": WORKER_ID,
-            "result": {"entities": all_entities, "redactions": all_redactions},
-        },
-        timeout=30,
-    )
+    try:
+        resp = http.post(
+            f"{broker_url}/complete",
+            json={
+                "job_id": job_id,
+                "worker_id": WORKER_ID,
+                "result": {"entities": all_entities, "redactions": all_redactions},
+            },
+            timeout=30,
+        )
+    except httpx.RequestError as exc:
+        print(f"{tag}[{doc_id}] complete request error: {exc}")
+        return False
+
     if resp.status_code == 200:
-        print(f"  [{doc_id}] Done")
         return True
-    print(f"  [{doc_id}] Complete failed: {resp.status_code} {resp.text[:200]}")
+    print(f"{tag}[{doc_id}] complete failed: {resp.status_code} {resp.text[:120]}")
     return False
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Thread worker loop
+# ---------------------------------------------------------------------------
+
+
+def thread_loop(
+    thread_id: int,
+    broker_url: str,
+    env: dict[str, str],
+    dry_run: bool,
+    loop: bool,
+) -> int:
+    """Poll → lease → process → complete, indefinitely. Returns jobs completed."""
+    http = httpx.Client(timeout=60.0)
+    tag = f"[t{thread_id:02d}] "
+    completed = 0
+
+    while True:
+        try:
+            lease_resp = http.post(
+                f"{broker_url}/lease",
+                json={"worker_id": WORKER_ID, "capabilities": ["features"], "max_jobs": 1},
+                timeout=10,
+            )
+        except httpx.ConnectError as exc:
+            print(f"{tag}broker unreachable: {exc} — sleeping 15s")
+            if not loop:
+                return completed
+            time.sleep(15)
+            continue
+        except httpx.RequestError as exc:
+            print(f"{tag}lease error: {exc} — sleeping 5s")
+            if not loop:
+                return completed
+            time.sleep(5)
+            continue
+
+        if lease_resp.status_code != 200:
+            print(f"{tag}lease HTTP {lease_resp.status_code} — sleeping 5s")
+            if not loop:
+                return completed
+            time.sleep(5)
+            continue
+
+        jobs = lease_resp.json().get("jobs", [])
+        if not jobs:
+            if not loop:
+                return completed
+            time.sleep(5)
+            continue
+
+        for job in jobs:
+            ok = process_one(http, broker_url, job, env, dry_run, tag)
+            if not ok and not dry_run:
+                try:
+                    http.post(
+                        f"{broker_url}/fail",
+                        json={
+                            "job_id": job["job_id"],
+                            "worker_id": WORKER_ID,
+                            "error": "gemini extraction failed",
+                            "retryable": True,
+                        },
+                        timeout=10,
+                    )
+                except httpx.RequestError:
+                    pass
+            elif ok:
+                completed += 1
+
+    return completed  # unreachable in loop mode
+
+
+# ---------------------------------------------------------------------------
+# Main
 # ---------------------------------------------------------------------------
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gemini features extraction worker")
     parser.add_argument(
-        "--loop", action="store_true", help="Keep polling until queue is empty"
+        "--concurrency", type=int, default=20,
+        help="Parallel Gemini calls (default 20; stay under rate limit)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="Lease and inspect jobs without processing"
+        "--loop", action="store_true",
+        help="Threads re-poll when queue is empty instead of exiting",
     )
     parser.add_argument(
-        "--max-jobs", type=int, default=1, help="Jobs to lease per poll (default 1)"
+        "--dry-run", action="store_true",
+        help="Lease and inspect jobs without calling Gemini",
     )
     args = parser.parse_args()
 
@@ -269,72 +344,30 @@ def main() -> None:
     env = get_gemini_env()
 
     if not env.get("GEMINI_API_KEY"):
-        print(
-            "ERROR: GEMINI_API_KEY not found. Add it to ~/.zprofile.", file=sys.stderr
-        )
+        print("ERROR: GEMINI_API_KEY not found. Add it to ~/.zprofile.", file=sys.stderr)
         sys.exit(1)
 
-    http = httpx.Client(timeout=60.0)
-    print(f"Gemini features worker started — broker {broker_url}, model {MODEL}")
+    print(
+        f"Gemini features worker — broker {broker_url}, model {MODEL}, "
+        f"concurrency {args.concurrency}"
+    )
 
-    while True:
-        try:
-            lease_resp = http.post(
-                f"{broker_url}/lease",
-                json={
-                    "worker_id": WORKER_ID,
-                    "capabilities": ["features"],
-                    "max_jobs": args.max_jobs,
-                },
-                timeout=10,
-            )
-        except httpx.ConnectError as exc:
-            print(f"Broker unreachable: {exc} — retrying in 15s")
-            if not args.loop:
-                break
-            time.sleep(15)
-            continue
-        except httpx.RequestError as exc:
-            print(f"Lease request error: {exc} — retrying in 5s")
-            if not args.loop:
-                break
-            time.sleep(5)
-            continue
+    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+        futures = {
+            pool.submit(thread_loop, i, broker_url, env, args.dry_run, args.loop): i
+            for i in range(args.concurrency)
+        }
+        total = 0
+        for fut in as_completed(futures):
+            tid = futures[fut]
+            try:
+                n = fut.result()
+                total += n
+                print(f"Thread {tid:02d} exited — {n} jobs completed")
+            except Exception as exc:
+                print(f"Thread {tid:02d} crashed: {exc}")
 
-        if lease_resp.status_code != 200:
-            print(f"Lease error: HTTP {lease_resp.status_code}")
-            if not args.loop:
-                break
-            time.sleep(5)
-            continue
-
-        jobs = lease_resp.json().get("jobs", [])
-        if not jobs:
-            print("No features jobs pending.")
-            if not args.loop:
-                break
-            time.sleep(10)
-            continue
-
-        for job in jobs:
-            job_id = job["job_id"]
-            doc_id = job["doc_id"]
-            print(f"\nLeased job {job_id} — doc {doc_id}")
-            ok = process_doc(http, broker_url, doc_id, job_id, env, args.dry_run)
-            if not ok and not args.dry_run:
-                http.post(
-                    f"{broker_url}/fail",
-                    json={
-                        "job_id": job_id,
-                        "worker_id": WORKER_ID,
-                        "error": "gemini extraction failed",
-                        "retryable": True,
-                    },
-                    timeout=10,
-                )
-
-        if not args.loop:
-            break
+    print(f"Done. Total jobs completed: {total}")
 
 
 if __name__ == "__main__":
