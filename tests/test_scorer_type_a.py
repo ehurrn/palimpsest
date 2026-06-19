@@ -106,8 +106,11 @@ def gapjoin_db(tmp_path):
     conn.close()
 
     # FAISS: chunk 500 has cosine sim 0.8 with [1,0,0,...], chunk 600 is orthogonal
-    v_b = np.zeros(768, dtype=np.float32); v_b[0] = 0.8; v_b[1] = 0.6
-    v_c = np.zeros(768, dtype=np.float32); v_c[2] = 1.0
+    v_b = np.zeros(768, dtype=np.float32)
+    v_b[0] = 0.8
+    v_b[1] = 0.6
+    v_c = np.zeros(768, dtype=np.float32)
+    v_c[2] = 1.0
     _build_faiss(tmp_path, {500: v_b, 600: v_c})
 
     return cfg

@@ -3,8 +3,6 @@
 import sqlite3
 import numpy as np
 import faiss
-import pytest
-
 from palimpsest.db import migrate
 from palimpsest.scorers.type_b import TypeBScorer
 from palimpsest.scorers.base import Candidate
@@ -101,8 +99,10 @@ def test_type_b_dosage_proximity_and_deduplication(tmp_path):
             VALUES (2001, 'doc_C', 1, 0, 50, 'A page talking about 15 rem.')""")
     conn.close()
 
-    v_b = np.zeros(768, dtype=np.float32); v_b[0] = 0.8
-    v_c = np.zeros(768, dtype=np.float32); v_c[0] = 0.8
+    v_b = np.zeros(768, dtype=np.float32)
+    v_b[0] = 0.8
+    v_c = np.zeros(768, dtype=np.float32)
+    v_c[0] = 0.8
     _build_faiss(tmp_path, {1001: v_b, 2001: v_c})
 
     conn = sqlite3.connect(cfg.db_path)

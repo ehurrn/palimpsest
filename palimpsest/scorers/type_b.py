@@ -14,7 +14,7 @@ from typing import Callable, List
 
 from palimpsest.config import Config
 from palimpsest.scorers.base import Candidate
-from palimpsest.scorers.type_a import TypeAScorer, get_ollama_embedding
+from palimpsest.scorers.type_a import TypeAScorer
 
 logger = logging.getLogger(__name__)
 

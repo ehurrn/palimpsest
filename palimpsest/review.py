@@ -106,8 +106,6 @@ def handle_people(cfg: Config, list_only: bool):
         review_id = item["review_id"]
         entity_id = item["entity_id"]
         reason = item["reason"]
-        doc_id = item["doc_id"]
-        page_no = item["page_no"]
         kind = item["kind"]
         real_text = item["text"]
         norm = item["norm"]
@@ -437,7 +435,6 @@ def apply_heuristic(cfg: Config):
     
     for item in items:
         review_id = item["review_id"]
-        entity_id = item["entity_id"]
         doc_id = item["doc_id"]
         page_no = item["page_no"]
         text = item["text"]

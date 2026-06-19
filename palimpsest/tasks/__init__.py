@@ -1,5 +1,5 @@
 # palimpsest/tasks/__init__.py
-from typing import Callable, Dict, Any
+from typing import Callable, Dict
 from palimpsest.config import Config
 
 class PermanentJobError(Exception):
@@ -27,7 +27,7 @@ except ImportError:
     pass
 
 try:
-    import palimpsest.tasks.embed
+    import palimpsest.tasks.embed  # noqa: F401
 except ImportError:
     pass
 

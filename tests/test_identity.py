@@ -292,7 +292,8 @@ def test_identity_gate_locked_in_review(tmp_path, monkeypatch):
     inputs = iter(["TEST", "v", "s", "q"])
     monkeypatch.setattr("builtins.input", lambda _="": next(inputs))
 
-    import io, sys
+    import io
+    import sys
     captured = io.StringIO()
     monkeypatch.setattr(sys, "stdout", captured)
 

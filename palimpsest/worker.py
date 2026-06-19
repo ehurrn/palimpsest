@@ -174,7 +174,8 @@ def run_worker(node_name: str, once: bool = False):
                         "job_id": job_id,
                         "error": f"No handler registered for {job_type}",
                         "retryable": False
-                    }
+                    },
+                    timeout=10.0,
                 )
                 stop_evt.set()
                 hb_thread.join()
@@ -197,7 +198,8 @@ def run_worker(node_name: str, once: bool = False):
                             "worker_id": node_name,
                             "job_id": job_id,
                             "result": result
-                        }
+                        },
+                        timeout=10.0,
                     )
                     logging.info(f"Completed job {job_id} ({job_type}) for doc {doc_id} in {duration:.2f}s")
             except PermanentJobError as e:
@@ -209,7 +211,8 @@ def run_worker(node_name: str, once: bool = False):
                         "job_id": job_id,
                         "error": str(e),
                         "retryable": False
-                    }
+                    },
+                    timeout=10.0,
                 )
             except Exception as e:
                 logging.error(f"Handler error on job {job_id}: {e}")
@@ -220,7 +223,8 @@ def run_worker(node_name: str, once: bool = False):
                         "job_id": job_id,
                         "error": str(e),
                         "retryable": True
-                    }
+                    },
+                    timeout=10.0,
                 )
                 
             stop_evt.set()

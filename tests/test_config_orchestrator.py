@@ -1,9 +1,8 @@
 # tests/test_config_orchestrator.py
 """Tests for orchestrator config field (optional section)."""
 import textwrap
-import pytest
 from pathlib import Path
-from palimpsest.config import load, ConfigError
+from palimpsest.config import load
 
 
 def _write_config(tmp_path: Path, toml_str: str) -> Path:

@@ -240,7 +240,7 @@ def test_violation_join_migrated(tmp_path):
     conn = sqlite3.connect(cfg.db_path)
     conn.row_factory = sqlite3.Row
     scorer = TypeEScorer()
-    results = scorer.run(conn, cfg)
+    scorer.run(conn, cfg)
 
     # Verify violation_candidates
     candidates = conn.execute("SELECT * FROM violation_candidates ORDER BY doc_id").fetchall()
@@ -273,7 +273,7 @@ def test_violation_join_migrated(tmp_path):
     with conn:
         conn.execute("DELETE FROM violation_candidates;")
 
-    results_after = scorer.run(conn, cfg)
+    scorer.run(conn, cfg)
 
     candidates_after = conn.execute("SELECT * FROM violation_candidates WHERE doc_id = 'doc_A' ORDER BY reg_id").fetchall()
     assert len(candidates_after) == 2

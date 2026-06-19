@@ -3,7 +3,6 @@ import sqlite3
 import pytest
 from typing import cast
 from unittest.mock import patch
-import datetime
 
 from palimpsest.config import Config
 from palimpsest.db import migrate

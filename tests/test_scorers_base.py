@@ -1,6 +1,6 @@
 # tests/test_scorers_base.py
 """Tests for Candidate dataclass and Scorer protocol."""
-from palimpsest.scorers.base import Candidate, Scorer
+from palimpsest.scorers.base import Candidate
 from palimpsest.scorers import SCORERS
 
 

@@ -155,6 +155,8 @@ def run_eval(cfg: Config, *, embed_fn=None, n_per_kind: int = 5,
         )
         conn.commit()
         run_id = cur.lastrowid
+        if run_id is None:
+            raise RuntimeError("INSERT INTO eval_runs returned no rowid")
 
         case_ids = _load_cases(conn, eval_cfg, run_id, cases, embed_fn)
 

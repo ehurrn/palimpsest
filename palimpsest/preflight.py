@@ -113,7 +113,6 @@ def check_broker(cfg) -> bool:
 
 def check_worker_heartbeat(cfg) -> bool:
     """M4 worker heartbeat seen in the last 5 minutes."""
-    MAX_SECONDS = 300
     try:
         from palimpsest.db import connect
         conn = connect(cfg)
@@ -138,7 +137,6 @@ def check_worker_heartbeat(cfg) -> bool:
         if expires.tzinfo is None:
             expires = expires.replace(tzinfo=datetime.timezone.utc)
         diff = (expires - now).total_seconds()
-        lease_ttl = cfg.broker.get("lease_ttl_seconds", 900)
         # heartbeat should refresh the lease, so if it expires in the future, heartbeat is alive
         if diff > 0:
             return _pass(f"Worker heartbeat active (lease expires in {diff:.0f}s)")
