@@ -81,6 +81,13 @@ def process_features(
     tmp_path.rename(dest_path)
 
     # Replace any prior extraction for this document.
+    # Must delete child-table rows first to satisfy FK constraints.
+    for child in (
+        "gap_candidates", "gapjoin_runs", "review_queue",
+        "violation_candidates", "series_gap_candidates",
+        "identity_link_candidates", "outcome_gap_candidates",
+    ):
+        conn.execute(f"DELETE FROM {child} WHERE doc_id=?", (doc_id,))  # noqa: S608
     conn.execute("DELETE FROM redactions WHERE doc_id=?", (doc_id,))
     conn.execute("DELETE FROM entities WHERE doc_id=?", (doc_id,))
 
