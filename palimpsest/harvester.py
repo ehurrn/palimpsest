@@ -132,42 +132,53 @@ def catalog(limit: int | None = None):
         if not rows:
             print("No rows found in tbody.")
             break
-            
+
+        acc_prefix_re = re.compile(
+            r'^' + re.escape(cfg.harvest['accession_prefix']) + r'\w+$'
+        )
+
         new_rows_count = 0
         for row in rows:
-            cols = row.find_all("td", recursive=False)
-            if len(cols) < 11:
+            # doc_id + title: any <a> whose href contains osti-id=
+            doc_id = None
+            title = None
+            for a in row.find_all("a"):
+                raw_href = a.get("href", "")
+                href = raw_href if isinstance(raw_href, str) else ""
+                m = re.search(r'osti-id=(\d+)', href)
+                if m:
+                    doc_id = m.group(1)
+                    title = a.get_text(strip=True)
+                    break
+            if not doc_id:
                 continue
-                
-            # Col 1: Title & link
-            title_col = cols[0]
-            title_a = title_col.find("a")
-            if not title_a:
-                continue
-            raw_href = title_a.get("href", "")
-            href = raw_href if isinstance(raw_href, str) else ""
-            match_id = re.search(r'osti-id=(\d+)', href)
-            if not match_id:
-                continue
-            doc_id = match_id.group(1)
-            title = title_col.get_text(strip=True)
-            
-            # Col 3: Accession
-            accession = cols[2].get_text(strip=True)
-            
-            # Col 8: Publication Date
-            pub_date = cols[7].get_text(strip=True)
-            year_match = re.search(r'\b\d{4}\b', pub_date)
-            year = int(year_match.group(0)) if year_match else None
-            
-            # Col 10: Full text link
-            ft_col = cols[9]
-            ft_a = ft_col.find("a")
-            has_fulltext = 1 if ft_a else 0
-            
+
+            # Accession: first cell whose text matches the configured prefix pattern
+            accession = None
+            for td in row.find_all("td"):
+                text_val = td.get_text(strip=True)
+                if acc_prefix_re.match(text_val):
+                    accession = text_val
+                    break
+
+            # Year: first 4-digit year (1900–2100) found in any cell
+            year = None
+            for td in row.find_all("td"):
+                m = re.search(r'\b((?:19|20)\d{2})\b', td.get_text(strip=True))
+                if m:
+                    year = int(m.group(1))
+                    break
+
+            # Full-text link: any <a> with .pdf in href
+            has_fulltext = 0
             source_url = None
-            if has_fulltext:
-                source_url = f"https://www.osti.gov/opennet/servlets/purl/{doc_id}.pdf"
+            for a in row.find_all("a"):
+                raw_href = a.get("href", "")
+                href = raw_href if isinstance(raw_href, str) else ""
+                if re.search(r'\.pdf', href, re.IGNORECASE):
+                    has_fulltext = 1
+                    source_url = f"https://www.osti.gov/opennet/servlets/purl/{doc_id}.pdf"
+                    break
                 
             # Insert into database
             with conn:

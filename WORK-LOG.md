@@ -206,3 +206,14 @@
 
 ## 2026-06-18 (TASK-20 Part B — FAISS decade sharding — Sentinel, on main)
 - Starting task: shard FAISS index by decade to prevent RAM exhaustion on full corpus. Plan: docs/superpowers/plans/2026-06-18-task20-phase2-scaling-safety.md Part B. Files: config.toml, results.py, tasks/embed.py, indexer.py + new tests/test_indexer_sharding.py.
+
+## 2026-06-19 (6-task hardening pass — Sentinel, on main)
+- Starting tasks 1-6: semantic chunking (spaCy), batch embeddings, DB indexes, deterministic FAISS routing, worker shutdown Event, hardened harvester DOM parsing.
+- Completed tasks 1-6:
+  1. embed.py chunk_text: replaced char-math with spaCy sentence-boundary chunker (lazy-loaded en_core_web_sm, last-sentence overlap carry-over). All 4 existing chunker tests pass.
+  2. embed.py batch embeddings: ollama_embed closure now POSTs all page chunks to /api/embed (array input), returns list of vectors. process_embed gathers all texts first then calls embed_fn once. Updated test mocks accordingly.
+  3. db.py indexes: added idx_chunks_doc_page, idx_entities_doc_page, idx_jobs_state after all tables are created.
+  4. indexer.py deterministic FAISS routing: _build_shard UPDATEs chunks.shard_id after writing faiss.idx; run_gapjoin builds shard_idx_map dict and replaces try/except reconstruct loop with DB shard_id lookup.
+  5. worker.py shutdown Event: shutdown_event = threading.Event() global; signal_handler sets it; all three time.sleep() calls in polling/backoff loops replaced with shutdown_event.wait(timeout=X) + is_set() break guard.
+  6. harvester.py hardened DOM: removed cols[X] index assumptions; doc_id from osti-id= regex on any <a> href; accession from regex matching configured prefix on cell text; year from first 4-digit year in any cell; fulltext from .pdf regex on any <a> href.
+  207 tests green; ruff/ty clean on all edited files.

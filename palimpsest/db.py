@@ -107,6 +107,10 @@ def migrate(cfg):
           version INTEGER PRIMARY KEY
         );""")
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (1);")
+        # Performance indexes for hot query paths
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_page ON chunks(doc_id, page_no);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_entities_doc_page ON entities(doc_id, page_no);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS gapjoin_runs (
           redaction_id INTEGER PRIMARY KEY REFERENCES redactions(redaction_id),
@@ -286,6 +290,12 @@ CREATE TABLE IF NOT EXISTS identity_link_candidates (
                 except sqlite3.OperationalError:
                     pass  # column already exists — migration is idempotent
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (7);")
+
+        # Deterministic FAISS routing: record which shard each chunk was indexed into
+        try:
+            conn.execute("ALTER TABLE chunks ADD COLUMN shard_id TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists — idempotent
 
 
 if __name__ == "__main__":

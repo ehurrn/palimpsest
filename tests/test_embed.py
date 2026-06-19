@@ -67,7 +67,7 @@ def test_chunker_empty():
     assert chunk_text("", 10, 3) == []
 
 def test_process_embed(test_config):
-    # Test process_embed function with mocked embedding fn
+    # Test process_embed function with mocked batch embedding fn
     ocr_data = [
         {
             "page_no": 1,
@@ -78,11 +78,11 @@ def test_process_embed(test_config):
             "text": "" # empty page
         }
     ]
-    
+
     dummy_vector = [0.1] * 768
-    def mock_embed(prompt):
-        return dummy_vector
-        
+    def mock_embed(prompts):
+        return [dummy_vector] * len(prompts)
+
     res = process_embed(ocr_data, test_config, mock_embed)
     assert "chunks" in res
     chunks = res["chunks"]
@@ -111,9 +111,10 @@ def test_handler_http_mocking(test_config, monkeypatch):
             }])
         return DummyResponse(404)
         
-    def mock_post(url, json, *args, **kwargs):
-        if "embeddings" in url:
-            return DummyResponse(200, json_data={"embedding": [0.2] * 768})
+    def mock_post(url, json=None, *args, **kwargs):
+        if url.endswith("/api/embed"):
+            n = len((json or {}).get("input", [""]))
+            return DummyResponse(200, json_data={"embeddings": [[0.2] * 768] * n})
         return DummyResponse(404)
         
     monkeypatch.setattr("httpx.get", mock_get)

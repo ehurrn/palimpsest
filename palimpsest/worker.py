@@ -28,12 +28,14 @@ should_exit = False
 broker_backoff = 5.0
 _current_job_id: int | None = None
 _current_worker_id: str | None = None
+shutdown_event = threading.Event()
 
 
 def signal_handler(signum, frame):
     global should_exit, _current_job_id, _current_worker_id
     logging.info(f"Received signal {signum}. Exiting cleanly after current job...")
     should_exit = True
+    shutdown_event.set()
 
     if _current_job_id is not None and _current_worker_id is not None:
         broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
@@ -149,15 +151,18 @@ def run_worker(node_name: str, once: bool = False):
                 logging.error(f"Lease request returned status {resp.status_code}")
                 if once:
                     break
-                time.sleep(10)
+                shutdown_event.wait(timeout=10)
+                if shutdown_event.is_set():
+                    break
                 continue
                 
             jobs = resp.json().get("jobs", [])
             if not jobs:
                 if once:
                     break
-                # Sleep jittered 10s
-                time.sleep(10 + random.uniform(-1, 1))
+                shutdown_event.wait(timeout=10 + random.uniform(-1, 1))
+                if shutdown_event.is_set():
+                    break
                 continue
                 
             job = jobs[0]
@@ -260,8 +265,10 @@ def run_worker(node_name: str, once: bool = False):
             logging.error(f"Broker connection error: {e}. Backing off for {broker_backoff}s...")
             if once:
                 break
-            time.sleep(broker_backoff)
+            shutdown_event.wait(timeout=broker_backoff)
             broker_backoff = min(broker_backoff * 2.0, 60.0)
+            if shutdown_event.is_set():
+                break
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Palimpsest Worker Daemon")

@@ -19,6 +19,7 @@ dependencies = [
     "ocrmac>=1.0.1; sys_platform == 'darwin'",
     "faiss-cpu",
     "mcp",
+    "anthropic>=0.111.0",
 ]
 
 [project.scripts]

@@ -95,6 +95,16 @@ def _build_shard(shard_dir, cfg: Config) -> list[int]:
     with open(pending_path, "w") as f:
         f.truncate(0)
 
+    # Record which shard each chunk belongs to for deterministic routing
+    shard_name = shard_dir.name
+    db_conn = connect(cfg)
+    with db_conn:
+        placeholders = ",".join("?" for _ in chunk_ids)
+        db_conn.execute(
+            f"UPDATE chunks SET shard_id = ? WHERE chunk_id IN ({placeholders})",
+            [shard_name] + chunk_ids,
+        )
+
     return chunk_ids
 
 
@@ -223,6 +233,9 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
     if not shard_indexes:
         logger.error("No FAISS index found. Please run 'build' first.")
         return
+
+    # Map shard name → index for O(1) lookup during scoring
+    shard_idx_map: dict[str, faiss.Index] = {name: idx for name, idx in shard_indexes}
     
     # Query redactions that have not yet been joined
     cur = conn.execute("""
@@ -444,16 +457,17 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                 if chunk_row:
                     try:
                         chunk_id = int(chunk_row["chunk_id"])
-                        # Reconstruct chunk vector from whichever shard holds it
+                        # Look up which shard holds this chunk for deterministic routing
+                        shard_row = conn.execute(
+                            "SELECT shard_id FROM chunks WHERE chunk_id = ?", (chunk_id,)
+                        ).fetchone()
                         chunk_vec = None
-                        for _, shard_idx in shard_indexes:
-                            try:
-                                chunk_vec = shard_idx.reconstruct(chunk_id)
-                                break
-                            except Exception:
-                                continue
+                        if shard_row and shard_row["shard_id"]:
+                            target_idx = shard_idx_map.get(shard_row["shard_id"])
+                            if target_idx is not None:
+                                chunk_vec = target_idx.reconstruct(chunk_id)
                         if chunk_vec is None:
-                            raise RuntimeError(f"chunk {chunk_id} not found in any shard")
+                            raise RuntimeError(f"chunk {chunk_id} not found in shard {shard_row}")
                         # L2-normalize
                         norm_c = np.linalg.norm(chunk_vec)
                         if norm_c > 0:
