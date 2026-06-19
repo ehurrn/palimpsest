@@ -220,3 +220,7 @@
 
 ## 2026-06-19
 - Starting: writing scripts/gemini_features_worker.py — Gemini-CLI-backed features extraction worker to offload the features bottleneck
+
+## 2026-06-19 (Bug-fix pass — Sentinel, on main)
+- Starting: fix FAISS metric assertion, N+1 anchor query, SELECT changes() removal, redactions LIMIT, ollama_url config, httpx resource leaks, global-state lock, PRAGMA-based schema checks, regulation UPSERT, pyproject.toml tool config.
+- Completed: scripts/gemini_features_worker.py — leases features jobs, fetches OCR JSON, sends to gemini-3.1-flash-lite-preview (4M ctx), extracts entities/redactions, completes via broker. Ruff + ty clean, tested live. Running in background (PID 8014) against 1,817 pending features jobs.
