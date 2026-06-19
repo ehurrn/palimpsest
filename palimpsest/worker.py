@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+
 import httpx
 
 from palimpsest.config import load
@@ -28,26 +29,31 @@ should_exit = False
 broker_backoff = 5.0
 _current_job_id: int | None = None
 _current_worker_id: str | None = None
+_job_lock = threading.Lock()
 shutdown_event = threading.Event()
 
 
 def signal_handler(signum, frame):
-    global should_exit, _current_job_id, _current_worker_id
+    global should_exit
     logging.info(f"Received signal {signum}. Exiting cleanly after current job...")
     should_exit = True
     shutdown_event.set()
 
-    if _current_job_id is not None and _current_worker_id is not None:
+    with _job_lock:
+        job_id = _current_job_id
+        worker_id = _current_worker_id
+
+    if job_id is not None and worker_id is not None:
         broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
         try:
             httpx.post(
                 f"{broker_url}/release",
-                json={"worker_id": _current_worker_id, "job_id": _current_job_id},
+                json={"worker_id": worker_id, "job_id": job_id},
                 timeout=5.0,
             )
-            logging.info(f"Released job {_current_job_id} back to queue on shutdown.")
+            logging.info(f"Released job {job_id} back to queue on shutdown.")
         except Exception as e:
-            logging.warning(f"Could not release job {_current_job_id} on shutdown: {e}")
+            logging.warning(f"Could not release job {job_id} on shutdown: {e}")
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
@@ -63,10 +69,9 @@ def warm_model(model_name: str, embed: bool = False):
     else:
         payload["prompt"] = ""
         payload["stream"] = False
-        
+
     start_time = time.time()
     try:
-        # Use a short timeout so we don't hang if Ollama is not running during testing
         resp = httpx.post(url, json=payload, timeout=2.0)
         duration = time.time() - start_time
         logging.info(f"Warmed model {model_name} in {duration:.2f}s (status {resp.status_code})")
@@ -89,190 +94,184 @@ def warm_all_models(capabilities: list[str]):
 
 def heartbeat_loop(worker_id: str, job_id: int, stop_evt: threading.Event, lost_evt: threading.Event):
     broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
-    client = httpx.Client()
     interval = cfg.broker["heartbeat_seconds"]
-    
-    while not stop_evt.wait(interval):
-        try:
-            resp = client.post(
-                f"{broker_url}/heartbeat",
-                json={"worker_id": worker_id, "job_ids": [job_id]},
-                timeout=5.0
-            )
-            if resp.status_code == 200:
-                lost = resp.json().get("lost", [])
-                if job_id in lost:
-                    logging.warning(f"Job {job_id} reported as lost by broker. Aborting.")
-                    lost_evt.set()
-                    break
-        except Exception as e:
-            logging.error(f"Heartbeat failed for job {job_id}: {e}")
+
+    with httpx.Client() as client:
+        while not stop_evt.wait(interval):
+            try:
+                resp = client.post(
+                    f"{broker_url}/heartbeat",
+                    json={"worker_id": worker_id, "job_ids": [job_id]},
+                    timeout=5.0
+                )
+                if resp.status_code == 200:
+                    lost = resp.json().get("lost", [])
+                    if job_id in lost:
+                        logging.warning(f"Job {job_id} reported as lost by broker. Aborting.")
+                        lost_evt.set()
+                        break
+            except Exception as e:
+                logging.error(f"Heartbeat failed for job {job_id}: {e}")
 
 def run_worker(node_name: str, once: bool = False):
-    global should_exit, broker_backoff
-    
+    global should_exit, broker_backoff, _current_job_id, _current_worker_id
+
     capabilities = cfg.nodes.get(node_name)
     if capabilities is None:
         logging.critical(f"Unknown node: {node_name}")
         sys.exit(2)
-        
+
     logging.info(f"Starting worker daemon for {node_name} with capabilities: {capabilities}")
-    
-    # Initial model warming
+
     warm_all_models(capabilities)
     last_warm_time = time.time()
-    
+
     broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
-    client = httpx.Client()
-    
-    while not should_exit:
-        # Re-ping models every 5 minutes
-        now_time = time.time()
-        if now_time - last_warm_time > 300:
-            warm_all_models(capabilities)
-            last_warm_time = now_time
-            
-        try:
-            # Lease a job
-            resp = client.post(
-                f"{broker_url}/lease",
-                json={
-                    "worker_id": node_name,
-                    "capabilities": capabilities,
-                    "max_jobs": 1
-                },
-                timeout=10.0
-            )
-            
-            # Reset backoff on success
-            broker_backoff = 5.0
-            
-            if resp.status_code != 200:
-                logging.error(f"Lease request returned status {resp.status_code}")
-                if once:
-                    break
-                shutdown_event.wait(timeout=10)
-                if shutdown_event.is_set():
-                    break
-                continue
-                
-            jobs = resp.json().get("jobs", [])
-            if not jobs:
-                if once:
-                    break
-                shutdown_event.wait(timeout=10 + random.uniform(-1, 1))
-                if shutdown_event.is_set():
-                    break
-                continue
-                
-            job = jobs[0]
-            job_id = job["job_id"]
-            job_type = job["type"]
-            doc_id = job["doc_id"]
 
-            logging.info(f"Leased job {job_id} ({job_type}) for doc {doc_id}")
-            start_time = time.time()
-
-            # Track current job so signal_handler can release it on SIGTERM
-            _current_job_id = job_id
-            _current_worker_id = node_name
-
-            # Setup heartbeat events and thread
-            stop_evt = threading.Event()
-            lost_evt = threading.Event()
-            hb_thread = threading.Thread(
-                target=heartbeat_loop,
-                args=(node_name, job_id, stop_evt, lost_evt),
-                daemon=True
-            )
-            hb_thread.start()
-
-            # Find and execute handler
-            handler_func = HANDLERS.get(job_type)
-            if not handler_func:
-                logging.error(f"No handler registered for job type: {job_type}")
-                client.post(
-                    f"{broker_url}/fail",
-                    json={
-                        "worker_id": node_name,
-                        "job_id": job_id,
-                        "error": f"No handler registered for {job_type}",
-                        "retryable": False
-                    },
-                    timeout=10.0,
-                )
-                _current_job_id = None
-                _current_worker_id = None
-                stop_evt.set()
-                hb_thread.join()
-                if once:
-                    break
-                continue
+    with httpx.Client() as client:
+        while not should_exit:
+            now_time = time.time()
+            if now_time - last_warm_time > 300:
+                warm_all_models(capabilities)
+                last_warm_time = now_time
 
             try:
-                # Execute handler
-                result = handler_func(cfg, job)
-                duration = time.time() - start_time
+                resp = client.post(
+                    f"{broker_url}/lease",
+                    json={
+                        "worker_id": node_name,
+                        "capabilities": capabilities,
+                        "max_jobs": 1
+                    },
+                    timeout=10.0
+                )
 
-                # Check if job was lost during execution
-                if lost_evt.is_set():
-                    logging.warning(f"Discarding result for job {job_id} since it was lost.")
-                else:
+                broker_backoff = 5.0
+
+                if resp.status_code != 200:
+                    logging.error(f"Lease request returned status {resp.status_code}")
+                    if once:
+                        break
+                    shutdown_event.wait(timeout=10)
+                    if shutdown_event.is_set():
+                        break
+                    continue
+
+                jobs = resp.json().get("jobs", [])
+                if not jobs:
+                    if once:
+                        break
+                    shutdown_event.wait(timeout=10 + random.uniform(-1, 1))
+                    if shutdown_event.is_set():
+                        break
+                    continue
+
+                job = jobs[0]
+                job_id = job["job_id"]
+                job_type = job["type"]
+                doc_id = job["doc_id"]
+
+                logging.info(f"Leased job {job_id} ({job_type}) for doc {doc_id}")
+                start_time = time.time()
+
+                with _job_lock:
+                    _current_job_id = job_id
+                    _current_worker_id = node_name
+
+                stop_evt = threading.Event()
+                lost_evt = threading.Event()
+                hb_thread = threading.Thread(
+                    target=heartbeat_loop,
+                    args=(node_name, job_id, stop_evt, lost_evt),
+                    daemon=True
+                )
+                hb_thread.start()
+
+                handler_func = HANDLERS.get(job_type)
+                if not handler_func:
+                    logging.error(f"No handler registered for job type: {job_type}")
                     client.post(
-                        f"{broker_url}/complete",
+                        f"{broker_url}/fail",
                         json={
                             "worker_id": node_name,
                             "job_id": job_id,
-                            "result": result
+                            "error": f"No handler registered for {job_type}",
+                            "retryable": False
                         },
                         timeout=10.0,
                     )
-                    logging.info(f"Completed job {job_id} ({job_type}) for doc {doc_id} in {duration:.2f}s")
-            except PermanentJobError as e:
-                logging.error(f"Permanent handler error on job {job_id}: {e}")
-                client.post(
-                    f"{broker_url}/fail",
-                    json={
-                        "worker_id": node_name,
-                        "job_id": job_id,
-                        "error": str(e),
-                        "retryable": False
-                    },
-                    timeout=10.0,
-                )
+                    with _job_lock:
+                        _current_job_id = None
+                        _current_worker_id = None
+                    stop_evt.set()
+                    hb_thread.join()
+                    if once:
+                        break
+                    continue
+
+                try:
+                    result = handler_func(cfg, job)
+                    duration = time.time() - start_time
+
+                    if lost_evt.is_set():
+                        logging.warning(f"Discarding result for job {job_id} since it was lost.")
+                    else:
+                        client.post(
+                            f"{broker_url}/complete",
+                            json={
+                                "worker_id": node_name,
+                                "job_id": job_id,
+                                "result": result
+                            },
+                            timeout=10.0,
+                        )
+                        logging.info(f"Completed job {job_id} ({job_type}) for doc {doc_id} in {duration:.2f}s")
+                except PermanentJobError as e:
+                    logging.error(f"Permanent handler error on job {job_id}: {e}")
+                    client.post(
+                        f"{broker_url}/fail",
+                        json={
+                            "worker_id": node_name,
+                            "job_id": job_id,
+                            "error": str(e),
+                            "retryable": False
+                        },
+                        timeout=10.0,
+                    )
+                except Exception as e:
+                    logging.error(f"Handler error on job {job_id}: {e}")
+                    client.post(
+                        f"{broker_url}/fail",
+                        json={
+                            "worker_id": node_name,
+                            "job_id": job_id,
+                            "error": str(e),
+                            "retryable": True
+                        },
+                        timeout=10.0,
+                    )
+
+                with _job_lock:
+                    _current_job_id = None
+                    _current_worker_id = None
+                stop_evt.set()
+                hb_thread.join()
+
+                if once:
+                    break
+
             except Exception as e:
-                logging.error(f"Handler error on job {job_id}: {e}")
-                client.post(
-                    f"{broker_url}/fail",
-                    json={
-                        "worker_id": node_name,
-                        "job_id": job_id,
-                        "error": str(e),
-                        "retryable": True
-                    },
-                    timeout=10.0,
-                )
-
-            _current_job_id = None
-            _current_worker_id = None
-            stop_evt.set()
-            hb_thread.join()
-
-            if once:
-                break
-                
-        except Exception as e:
-            logging.error(f"Broker connection error: {e}. Backing off for {broker_backoff}s...")
-            if once:
-                break
-            shutdown_event.wait(timeout=broker_backoff)
-            broker_backoff = min(broker_backoff * 2.0, 60.0)
-            if shutdown_event.is_set():
-                break
+                logging.error(f"Broker connection error: {e}. Backing off for {broker_backoff}s...")
+                if once:
+                    break
+                shutdown_event.wait(timeout=broker_backoff)
+                broker_backoff = min(broker_backoff * 2.0, 60.0)
+                if shutdown_event.is_set():
+                    break
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Palimpsest Worker Daemon")
     parser.add_argument("--node", type=str, required=True, help="Name of the node (e.g. m4, gonktop)")
     args = parser.parse_args()
-    
+
     run_worker(args.node)

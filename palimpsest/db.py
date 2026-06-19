@@ -1,7 +1,17 @@
 # palimpsest/db.py
 import sqlite3
 import sys
+
 from palimpsest.config import load
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """Return True if *column* already exists in *table* (via PRAGMA table_info)."""
+    return any(
+        row[1] == column
+        for row in conn.execute(f"PRAGMA table_info({table})")
+    )
+
 
 def connect(cfg):
     cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,8 +194,10 @@ def migrate(cfg):
         ]
         for citation, eff_date, snippet in REGS:
             conn.execute(
-                "INSERT OR IGNORE INTO regulation_citations (citation, effective_date, text_snippet) VALUES (?, ?, ?)",
-                (citation, eff_date, snippet)
+                "INSERT INTO regulation_citations (citation, effective_date, text_snippet) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(citation) DO UPDATE SET text_snippet=excluded.text_snippet",
+                (citation, eff_date, snippet),
             )
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (3);")
 
@@ -285,17 +297,13 @@ CREATE TABLE IF NOT EXISTS identity_link_candidates (
                 ("confidence_method", "TEXT"),
                 ("gate_tier", "TEXT"),
             ):
-                try:
+                if not _has_column(conn, _table, _col):
                     conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} {_decl}")
-                except sqlite3.OperationalError:
-                    pass  # column already exists — migration is idempotent
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (7);")
 
         # Deterministic FAISS routing: record which shard each chunk was indexed into
-        try:
+        if not _has_column(conn, "chunks", "shard_id"):
             conn.execute("ALTER TABLE chunks ADD COLUMN shard_id TEXT")
-        except sqlite3.OperationalError:
-            pass  # column already exists — idempotent
 
 
 if __name__ == "__main__":

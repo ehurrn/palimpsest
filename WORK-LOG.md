@@ -224,3 +224,15 @@
 ## 2026-06-19 (Bug-fix pass — Sentinel, on main)
 - Starting: fix FAISS metric assertion, N+1 anchor query, SELECT changes() removal, redactions LIMIT, ollama_url config, httpx resource leaks, global-state lock, PRAGMA-based schema checks, regulation UPSERT, pyproject.toml tool config.
 - Completed: scripts/gemini_features_worker.py — leases features jobs, fetches OCR JSON, sends to gemini-3.1-flash-lite-preview (4M ctx), extracts entities/redactions, completes via broker. Ruff + ty clean, tested live. Running in background (PID 8014) against 1,817 pending features jobs.
+- Completed bug-fix pass:
+  1. type_a.py FAISS metric assertion: `assert index.metric_type == faiss.METRIC_INNER_PRODUCT` after index load.
+  2. type_a.py N+1 elimination: `_fetch_entities_by_page()` bulk-fetches all candidate+redaction pages in one VALUES IN query before the scoring loop; dosage proximity/subj queries also resolved from the cache instead of per-entity SQL.
+  3. type_a.py SELECT changes() removed: `if gap_row is not None:` used directly from RETURNING result.
+  4. type_a.py LIMIT 1000 added to redactions fetch.
+  5. type_a.py Ollama URL from config: `cfg.models.get("ollama_url", "http://localhost:11434")`.
+  6. worker.py resource leaks: `heartbeat_loop` and `run_worker` both wrap `httpx.Client()` in `with` context managers.
+  7. worker.py race condition: `_job_lock = threading.Lock()` guards all reads/writes of `_current_job_id` / `_current_worker_id`.
+  8. db.py PRAGMA-based column checks: `_has_column(conn, table, col)` via `PRAGMA table_info`; replaces all try/except OperationalError ALTER TABLE blocks.
+  9. db.py regulation UPSERT: INSERT ... ON CONFLICT(citation) DO UPDATE SET text_snippet=excluded.text_snippet.
+  10. pyproject.toml: added [tool.ruff] (line-length=100, select E/F/W/I) and [tool.mypy] (strict=false, ignore_missing_imports).
+  207 tests green; ruff/ty clean on all edited files.

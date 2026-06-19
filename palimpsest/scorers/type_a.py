@@ -19,6 +19,7 @@ Candidates above threshold are written to gap_candidates.
 Person-kind candidates also enqueue a pending review in review_queue.
 """
 from __future__ import annotations
+
 import datetime
 import logging
 import math
@@ -38,9 +39,10 @@ logger = logging.getLogger(__name__)
 def get_ollama_embedding(cfg: Config, text: str) -> List[float]:
     """Get embedding vector from local Ollama service."""
     import httpx
+    ollama_url = cfg.models.get("ollama_url", "http://localhost:11434")
     try:
         resp = httpx.post(
-            "http://localhost:11434/api/embeddings",
+            f"{ollama_url}/api/embeddings",
             json={
                 "model": cfg.embed["model"],
                 "prompt": text,
@@ -62,6 +64,29 @@ def get_slot_expectation(kind: str, label: str) -> str | None:
         if "b)(6)" in clean_label or "b)(7)" in clean_label:
             return "person"
     return None
+
+
+def _fetch_entities_by_page(
+    conn: sqlite3.Connection, pages: set[tuple[str, int]]
+) -> dict[tuple[str, int], list[sqlite3.Row]]:
+    """Bulk-load entity rows grouped by (doc_id, page_no) to avoid N+1 queries."""
+    by_page: dict[tuple[str, int], list[sqlite3.Row]] = {}
+    if not pages:
+        return by_page
+    flat: list[str | int] = []
+    for doc_id, page_no in pages:
+        flat.append(doc_id)
+        flat.append(page_no)
+    placeholders = ",".join("(?,?)" for _ in pages)
+    cur = conn.execute(
+        "SELECT entity_id, doc_id, page_no, kind, norm, char_start, char_end "
+        f"FROM entities WHERE (doc_id, page_no) IN (VALUES {placeholders}) "
+        "ORDER BY entity_id",
+        flat,
+    )
+    for row in cur.fetchall():
+        by_page.setdefault((row["doc_id"], row["page_no"]), []).append(row)
+    return by_page
 
 
 class TypeAScorer:
@@ -99,6 +124,10 @@ class TypeAScorer:
             return []
 
         index = faiss.read_index(str(index_path))
+        assert index.metric_type == faiss.METRIC_INNER_PRODUCT, (
+            f"FAISS index must use METRIC_INNER_PRODUCT (IndexFlatIP); "
+            f"got metric_type={index.metric_type}. Rebuild the index."
+        )
 
         cur = conn.execute("""
             SELECT r.redaction_id, r.doc_id, r.page_no, r.kind, r.label,
@@ -106,6 +135,7 @@ class TypeAScorer:
             FROM redactions r
             LEFT JOIN gapjoin_runs g ON r.redaction_id = g.redaction_id
             WHERE g.redaction_id IS NULL
+            LIMIT 1000
         """)
         redactions = cur.fetchall()
 
@@ -273,6 +303,15 @@ class TypeAScorer:
                                                 "hit_chunk_ids": [ch["chunk_id"]],
                                             }
 
+            # Pre-fetch entity rows for all candidate pages + redaction page to
+            # eliminate N+1 queries in the scoring loop below.
+            scoring_pages: set[tuple[str, int]] = {
+                (cand["entity"]["doc_id"], cand["entity"]["page_no"])
+                for cand in candidates.values()
+            }
+            scoring_pages.add((r["doc_id"], r["page_no"]))
+            entities_by_page = _fetch_entities_by_page(conn, scoring_pages)
+
             # Score each candidate
             scored: list[dict] = []
             for eid, cand in candidates.items():
@@ -301,26 +340,22 @@ class TypeAScorer:
                     else:
                         sc_cosine = 0.0
 
-                anchors_on_e_page = set(
-                    row["norm"] for row in conn.execute(
-                        "SELECT DISTINCT norm FROM entities WHERE doc_id = ? AND page_no = ?",
-                        (e["doc_id"], e["page_no"]),
-                    )
-                )
+                # Anchor overlap — resolved from pre-fetched page cache
+                page_ents = entities_by_page.get((e["doc_id"], e["page_no"]), [])
+                anchors_on_e_page = {row["norm"] for row in page_ents}
                 sc_anchor = min(len(A & anchors_on_e_page) / max(len(A), 1.0), 1.0)
                 sc_kind   = 1.0 if (expectation and e["kind"] == expectation) else 0.5
 
                 tot_score = w_cosine * sc_cosine + w_anchor * sc_anchor + w_kind * sc_kind
 
                 if e["kind"] == "dosage":
-                    other_ents = conn.execute(
-                        "SELECT char_start, char_end FROM entities "
-                        "WHERE doc_id = ? AND page_no = ? "
-                        "AND kind IN ('subject_ref', 'person')",
-                        (e["doc_id"], e["page_no"]),
-                    ).fetchall()
+                    # Proximity to nearest subject/person — use cached page entities
+                    subj_person = [
+                        row for row in page_ents
+                        if row["kind"] in ("subject_ref", "person")
+                    ]
                     min_dist = None
-                    for o in other_ents:
+                    for o in subj_person:
                         if (o["char_start"] is None or o["char_end"] is None
                                 or e["char_start"] is None or e["char_end"] is None):
                             continue
@@ -337,27 +372,20 @@ class TypeAScorer:
                     tot_score += 0.1 * proximity_score
 
                     cand_subj = {
-                        row["norm"] for row in conn.execute(
-                            "SELECT norm FROM entities WHERE doc_id = ? AND page_no = ? "
-                            "AND kind IN ('subject_ref', 'person')",
-                            (e["doc_id"], e["page_no"]),
-                        )
+                        row["norm"] for row in subj_person
                     }
+                    red_page_ents = entities_by_page.get((r["doc_id"], r["page_no"]), [])
                     red_subj = {
-                        row["norm"] for row in conn.execute(
-                            "SELECT norm FROM entities WHERE doc_id = ? AND page_no = ? "
-                            "AND kind IN ('subject_ref', 'person')",
-                            (r["doc_id"], r["page_no"]),
-                        )
+                        row["norm"] for row in red_page_ents
+                        if row["kind"] in ("subject_ref", "person")
                     }
                     if cand_subj & red_subj:
                         tot_score += 0.15
 
-                    has_red_dosage = conn.execute(
-                        "SELECT 1 FROM entities WHERE doc_id = ? AND page_no = ? "
-                        "AND kind = 'dosage' AND norm = ? LIMIT 1",
-                        (r["doc_id"], r["page_no"], e["norm"]),
-                    ).fetchone() is not None
+                    has_red_dosage = any(
+                        row["kind"] == "dosage" and row["norm"] == e["norm"]
+                        for row in red_page_ents
+                    )
                     in_context = (
                         e["norm"] in ctx_before.lower()
                         or e["norm"] in ctx_after.lower()
@@ -414,7 +442,8 @@ class TypeAScorer:
                                 "VALUES (?, ?, 'pending')",
                                 (eid, f"person in gap candidate #{gap_id}"),
                             )
-                    if conn.execute("SELECT changes()").fetchone()[0]:
+                    # Use gap_row directly — no SELECT changes() needed
+                    if gap_row is not None:
                         inserted.append(Candidate(
                             type_key=self.type_key,
                             score=sc["tot_score"],
