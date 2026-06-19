@@ -8,6 +8,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any, List
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -114,10 +115,41 @@ def reap_leases():
     finally:
         conn.close()
 
+def revive_dead_jobs() -> int:
+    """Reset jobs that have been dead longer than dead_retry_minutes back to pending.
+
+    Returns count of revived jobs.
+    """
+    retry_minutes = cfg.broker.get("dead_retry_minutes", 30)
+    cutoff = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(minutes=retry_minutes)
+    ).isoformat()
+    now = utc_now_str()
+    conn = connect(cfg)
+    try:
+        with conn:
+            cur = conn.execute(
+                "UPDATE jobs SET state='pending', attempts=0, error=NULL, updated_at=? "
+                "WHERE state='dead' AND updated_at < ?",
+                (now, cutoff),
+            )
+            return cur.rowcount
+    except sqlite3.OperationalError as e:
+        if "lock" in str(e).lower() or "busy" in str(e).lower():
+            return 0
+        raise
+    finally:
+        conn.close()
+
+
 def reaper_loop():
     while True:
         try:
             reap_leases()
+            revived = revive_dead_jobs()
+            if revived:
+                print(f"[reaper] revived {revived} dead jobs", flush=True)
         except Exception:
             pass
         time.sleep(60)
@@ -183,16 +215,16 @@ def enqueue(job: EnqueuePayload):
         row = cur.fetchone()
         job_id = row["job_id"]
         state = row["state"]
-        
-        # If existing state is failed or dead, reset to pending
+
+        # If existing state is failed or dead, reset to pending and clear attempts
         if state in ("failed", "dead"):
             with conn:
                 conn.execute(
-                    "UPDATE jobs SET state='pending', updated_at=? WHERE job_id=?",
+                    "UPDATE jobs SET state='pending', attempts=0, error=NULL, updated_at=? WHERE job_id=?",
                     (now, job_id)
                 )
             state = "pending"
-            
+
         return {"job_id": job_id, "state": state, "deduped": True}
 
 @app.post("/lease")
@@ -201,18 +233,18 @@ def lease(req: LeasePayload):
     now = datetime.datetime.now(datetime.timezone.utc)
     expires = (now + datetime.timedelta(seconds=cfg.broker["lease_ttl_seconds"])).isoformat()
     now_str = now.isoformat()
-    
+
     if not req.capabilities:
         return {"jobs": []}
-        
+
     caps_placeholders = ",".join("?" for _ in req.capabilities)
-    query = f"""
-    SELECT job_id, type, doc_id, payload FROM jobs 
-    WHERE state='pending' AND type IN ({caps_placeholders}) 
-    ORDER BY priority ASC, job_id ASC LIMIT ?
-    """
+    query = (
+        f"SELECT job_id, type, doc_id, payload FROM jobs"
+        f" WHERE state='pending' AND type IN ({caps_placeholders})"
+        f" ORDER BY priority ASC, job_id ASC LIMIT ?"
+    )
     params = req.capabilities + [req.max_jobs]
-    
+
     # BEGIN IMMEDIATE acquires the write lock before the SELECT so concurrent
     # /lease calls cannot read the same pending rows and double-lease them.
     # On lock contention SQLite will retry for busy_timeout ms before raising.
@@ -246,7 +278,7 @@ def heartbeat(req: HeartbeatPayload):
     expires = (now + datetime.timedelta(seconds=cfg.broker["lease_ttl_seconds"])).isoformat()
     extended = []
     lost = []
-    
+
     with conn:
         for job_id in req.job_ids:
             cur = conn.execute(
@@ -262,20 +294,20 @@ def heartbeat(req: HeartbeatPayload):
                 extended.append(job_id)
             else:
                 lost.append(job_id)
-                
+
     return {"extended": extended, "lost": lost}
 
 @app.post("/complete")
 def complete(req: CompletePayload):
     conn = connect(cfg)
     now = utc_now_str()
-    
+
     with conn:
         cur = conn.execute("SELECT type, doc_id, state, lease_owner FROM jobs WHERE job_id=?", (req.job_id,))
         job = cur.fetchone()
         if not job or job["lease_owner"] != req.worker_id or job["state"] != "leased":
             raise HTTPException(status_code=409, detail="Ownership mismatch or job not leased")
-        
+
         doc_id = job["doc_id"]
         # Defense-in-depth: never build a storage path from an unsafe doc_id,
         # even if a row predates /enqueue validation.
@@ -294,13 +326,13 @@ def fail(req: FailPayload):
     conn = connect(cfg)
     now = utc_now_str()
     max_attempts = cfg.broker["max_attempts"]
-    
+
     with conn:
         cur = conn.execute("SELECT attempts, state, lease_owner FROM jobs WHERE job_id=?", (req.job_id,))
         job = cur.fetchone()
         if not job or job["lease_owner"] != req.worker_id or job["state"] != "leased":
             raise HTTPException(status_code=409, detail="Ownership mismatch or job not leased")
-        
+
         attempts = job["attempts"]
         if req.retryable and attempts < max_attempts:
             conn.execute(
@@ -313,7 +345,7 @@ def fail(req: FailPayload):
                 "UPDATE jobs SET state=?, error=?, updated_at=? WHERE job_id=?",
                 (state, req.error, now, req.job_id)
             )
-            
+
     return {"status": "recorded"}
 
 @app.post("/release")
@@ -346,7 +378,7 @@ def release(req: ReleasePayload):
 @app.get("/status")
 def status():
     conn = connect(cfg)
-    
+
     # Counts by (type, state)
     cur = conn.execute("SELECT type, state, COUNT(*) as count FROM jobs GROUP BY type, state")
     counts = {}
@@ -355,18 +387,18 @@ def status():
         if t not in counts:
             counts[t] = {}
         counts[t][s] = c
-        
+
     # Active leases / workers
     cur = conn.execute("SELECT lease_owner, MAX(updated_at) as last_seen FROM jobs WHERE state='leased' GROUP BY lease_owner")
     workers = {row["lease_owner"]: row["last_seen"] for row in cur.fetchall()}
-    
+
     # 10 most recent dead jobs with errors
     cur = conn.execute("SELECT type, doc_id, error, updated_at FROM jobs WHERE state='dead' ORDER BY updated_at DESC LIMIT 10")
     dead_jobs = [
         {"type": row["type"], "doc_id": row["doc_id"], "error": row["error"], "updated_at": row["updated_at"]}
         for row in cur.fetchall()
     ]
-    
+
     return {
         "job_counts": counts,
         "active_workers": workers,
@@ -389,6 +421,30 @@ def list_dead_jobs(type: str = "ocr"):
         "SELECT DISTINCT doc_id FROM jobs WHERE state='dead' AND type=?", (type,)
     ).fetchall()
     return {"type": type, "doc_ids": [r["doc_id"] for r in rows], "count": len(rows)}
+
+
+@app.post("/jobs/revive")
+def revive_jobs(type: str | None = None):
+    """Immediately reset all dead jobs (optionally filtered by type) to pending."""
+    now = utc_now_str()
+    conn = connect(cfg)
+    try:
+        with conn:
+            if type:
+                cur = conn.execute(
+                    "UPDATE jobs SET state='pending', attempts=0, error=NULL, updated_at=? "
+                    "WHERE state='dead' AND type=?",
+                    (now, type),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE jobs SET state='pending', attempts=0, error=NULL, updated_at=? "
+                    "WHERE state='dead'",
+                    (now,),
+                )
+            return {"revived": cur.rowcount}
+    finally:
+        conn.close()
 
 
 @app.get("/ocr/{doc_id}.json")
