@@ -278,15 +278,29 @@ def main() -> None:
     print(f"Gemini features worker started — broker {broker_url}, model {MODEL}")
 
     while True:
-        lease_resp = http.post(
-            f"{broker_url}/lease",
-            json={
-                "worker_id": WORKER_ID,
-                "capabilities": ["features"],
-                "max_jobs": args.max_jobs,
-            },
-            timeout=10,
-        )
+        try:
+            lease_resp = http.post(
+                f"{broker_url}/lease",
+                json={
+                    "worker_id": WORKER_ID,
+                    "capabilities": ["features"],
+                    "max_jobs": args.max_jobs,
+                },
+                timeout=10,
+            )
+        except httpx.ConnectError as exc:
+            print(f"Broker unreachable: {exc} — retrying in 15s")
+            if not args.loop:
+                break
+            time.sleep(15)
+            continue
+        except httpx.RequestError as exc:
+            print(f"Lease request error: {exc} — retrying in 5s")
+            if not args.loop:
+                break
+            time.sleep(5)
+            continue
+
         if lease_resp.status_code != 200:
             print(f"Lease error: HTTP {lease_resp.status_code}")
             if not args.loop:
