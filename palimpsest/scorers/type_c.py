@@ -49,15 +49,22 @@ class TypeCScorer:
     type_key = "type_c"
     candidates_table = "identity_link_candidates"
 
-    def top(self, conn: sqlite3.Connection, limit: int = 20) -> list[Candidate]:
+    def top(self, conn: sqlite3.Connection, limit: int = 20, doc_ids: list[str] | None = None) -> list[Candidate]:
         """Return the top-scoring identity-link candidates from the DB."""
-        rows = conn.execute("""
+        query = """
             SELECT subject_doc_id, subject_page, subject_ref,
                    named_doc_id, named_page, named_entity_id, score
             FROM identity_link_candidates
-            ORDER BY score DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
+        """
+        params: list = []
+        if doc_ids:
+            placeholders = ",".join("?" for _ in doc_ids)
+            query += f" WHERE (subject_doc_id IN ({placeholders}) OR named_doc_id IN ({placeholders}))"
+            params.extend(doc_ids)
+            params.extend(doc_ids)
+        query += " ORDER BY score DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
         results: list[Candidate] = []
         for row in rows:
             eids = [row["named_entity_id"]] if row["named_entity_id"] else []
