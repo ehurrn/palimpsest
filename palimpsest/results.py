@@ -81,13 +81,37 @@ def process_features(
     tmp_path.rename(dest_path)
 
     # Replace any prior extraction for this document.
-    # Must delete child-table rows first to satisfy FK constraints.
-    for child in (
-        "gap_candidates", "gapjoin_runs", "review_queue",
-        "violation_candidates", "series_gap_candidates",
-        "identity_link_candidates", "outcome_gap_candidates",
-    ):
-        conn.execute(f"DELETE FROM {child} WHERE doc_id=?", (doc_id,))  # noqa: S608
+    # Child tables use varied FK columns — delete each via the right join.
+    # gap_candidates/gapjoin_runs join through redactions; review_queue through entities.
+    conn.execute(
+        "DELETE FROM gap_candidates WHERE redaction_id IN (SELECT redaction_id FROM redactions WHERE doc_id=?)"
+        " OR clear_entity_id IN (SELECT entity_id FROM entities WHERE doc_id=?)",
+        (doc_id, doc_id),
+    )
+    conn.execute(
+        "DELETE FROM gapjoin_runs WHERE redaction_id IN (SELECT redaction_id FROM redactions WHERE doc_id=?)",
+        (doc_id,),
+    )
+    conn.execute(
+        "DELETE FROM review_queue WHERE entity_id IN (SELECT entity_id FROM entities WHERE doc_id=?)",
+        (doc_id,),
+    )
+    conn.execute("DELETE FROM violation_candidates WHERE doc_id=?", (doc_id,))
+    conn.execute(
+        "DELETE FROM series_gap_candidates WHERE flanking_doc_id=?"
+        " OR ref_entity_id IN (SELECT entity_id FROM entities WHERE doc_id=?)",
+        (doc_id, doc_id),
+    )
+    conn.execute(
+        "DELETE FROM identity_link_candidates WHERE subject_doc_id=? OR named_doc_id=?"
+        " OR named_entity_id IN (SELECT entity_id FROM entities WHERE doc_id=?)",
+        (doc_id, doc_id, doc_id),
+    )
+    conn.execute(
+        "DELETE FROM outcome_gap_candidates WHERE initiation_doc_id=?"
+        " OR future_ref_entity_id IN (SELECT entity_id FROM entities WHERE doc_id=?)",
+        (doc_id, doc_id),
+    )
     conn.execute("DELETE FROM redactions WHERE doc_id=?", (doc_id,))
     conn.execute("DELETE FROM entities WHERE doc_id=?", (doc_id,))
 
