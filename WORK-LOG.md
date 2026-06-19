@@ -195,3 +195,5 @@
 
 ## 2026-06-18 (TASK-20 Part A — heuristic auto-approver — Sentinel, on main)
 - Starting task: align apply_heuristic() to spec. Old version queries review_queue (should query entities), uses HEURISTIC (should be HEURISTIC_AUTO), UPDATEs existing rows (should INSERT new approved rows), has birth-year regex (spec: 75-year doc-age only). Plan file: docs/superpowers/plans/2026-06-18-task20-phase2-scaling-safety.md Part A.
+- Completed task: commit b2a030c.
+  apply_heuristic rewritten: queries entities (not review_queue), single 75-year doc-age rule (birth-year regex removed), INSERTs new approved rows (HEURISTIC_AUTO), single transaction, deduped by norm. import re removed. test_heuristic_classification rewritten; 5 new spec tests added. 195 tests green (was 190).
