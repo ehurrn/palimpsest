@@ -217,3 +217,6 @@
   5. worker.py shutdown Event: shutdown_event = threading.Event() global; signal_handler sets it; all three time.sleep() calls in polling/backoff loops replaced with shutdown_event.wait(timeout=X) + is_set() break guard.
   6. harvester.py hardened DOM: removed cols[X] index assumptions; doc_id from osti-id= regex on any <a> href; accession from regex matching configured prefix on cell text; year from first 4-digit year in any cell; fulltext from .pdf regex on any <a> href.
   207 tests green; ruff/ty clean on all edited files.
+
+## 2026-06-19
+- Starting: writing scripts/gemini_features_worker.py — Gemini-CLI-backed features extraction worker to offload the features bottleneck
