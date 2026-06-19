@@ -16,7 +16,8 @@ port = 8078
 
 [harvest]
 base_url = "https://www.osti.gov/opennet"
-rate_limit_rps = 0.5
+rate_limit_rps = 0.75     # PDF download rate (approved by webmaster: 40-50/min)
+catalog_rate_limit_rps = 2.0  # catalog page requests (HTML, much lighter)
 backoff_initial_s = 5
 backoff_max_s = 300
 user_agent = "palimpsest-research/0.1 (contact: j.eric.herren@gmail.com)"
@@ -39,6 +40,7 @@ model = "nomic-embed-text"
 dim = 768
 chunk_chars = 800
 chunk_overlap = 150
+shard_by = "decade"
 
 [gapjoin]
 score_threshold = 0.65

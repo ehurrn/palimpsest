@@ -1,11 +1,12 @@
 # palimpsest/harvester.py
 import argparse
+import datetime
 import hashlib
+import re
 import sys
 import time
-import re
-import datetime
 from pathlib import Path
+
 import httpx
 from bs4 import BeautifulSoup
 
@@ -16,6 +17,7 @@ cfg = load()
 last_request_time = 0.0
 consecutive_403_count = 0
 
+
 def rate_limit_sleep(rps: float):
     global last_request_time
     now = time.time()
@@ -25,10 +27,14 @@ def rate_limit_sleep(rps: float):
         time.sleep(wait)
     last_request_time = time.time()
 
-def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) -> httpx.Response:
+
+def request_with_retry(
+    client: httpx.Client, method: str, url: str, rps: float | None = None, **kwargs
+) -> httpx.Response:
     global consecutive_403_count
     backoff = cfg.harvest["backoff_initial_s"]
     max_backoff = cfg.harvest["backoff_max_s"]
+    effective_rps = rps if rps is not None else cfg.harvest["rate_limit_rps"]
 
     # Explicit timeout so a hung OSTI socket cannot stall the harvester forever.
     # `read` bounds the gap between received bytes (not total transfer time), so
@@ -42,17 +48,20 @@ def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) ->
     )
 
     while True:
-        rate_limit_sleep(cfg.harvest["rate_limit_rps"])
+        rate_limit_sleep(effective_rps)
         try:
             if method == "GET":
                 resp = client.get(url, **kwargs)
             else:
                 resp = client.post(url, **kwargs)
-                
+
             if resp.status_code == 403:
                 consecutive_403_count += 1
                 if consecutive_403_count >= 3:
-                    print("CRITICAL: Received 3 consecutive 403 Forbidden responses. Aborting.", file=sys.stderr)
+                    print(
+                        "CRITICAL: Received 3 consecutive 403 Forbidden responses. Aborting.",
+                        file=sys.stderr,
+                    )
                     # Write to HUMAN_DO_THIS.md at the project root (palimpsest/harvester.py -> repo root)
                     human_do_this = Path(__file__).resolve().parent.parent / "HUMAN_DO_THIS.md"
                     with open(human_do_this, "a") as f:
@@ -63,10 +72,10 @@ def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) ->
                 print(f"Received 403. Waiting {wait_time}s before retry...", file=sys.stderr)
                 time.sleep(wait_time)
                 continue
-                
+
             # Reset 403 count on any non-403 success or normal error
             consecutive_403_count = 0
-            
+
             if resp.status_code in (429, 503):
                 # Backoff
                 retry_after = resp.headers.get("Retry-After")
@@ -75,67 +84,79 @@ def request_with_retry(client: httpx.Client, method: str, url: str, **kwargs) ->
                 else:
                     wait_time = backoff
                     backoff = min(backoff * 2, max_backoff)
-                print(f"Received {resp.status_code}. Waiting {wait_time}s before retry...", file=sys.stderr)
+                print(
+                    f"Received {resp.status_code}. Waiting {wait_time}s before retry...",
+                    file=sys.stderr,
+                )
                 time.sleep(wait_time)
                 continue
-                
+
             return resp
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
             print(f"Request error: {e}. Retrying after {backoff}s...", file=sys.stderr)
             time.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
 
-def catalog(limit: int | None = None):
+
+def catalog(limit: int | None = None, start_offset: int | None = None):
     conn = connect(cfg)
+    catalog_rps = cfg.harvest.get("catalog_rate_limit_rps", cfg.harvest["rate_limit_rps"])
     client = httpx.Client(headers={"User-Agent": cfg.harvest["user_agent"]})
-    
-    # Start from the current number of cataloged documents to resume efficiently
-    start = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+
+    # Use explicit start or resume from current doc count.
+    # Sort by accession number for deterministic pagination across runs.
+    start = (
+        start_offset
+        if start_offset is not None
+        else conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    )
     page_size = 100
     total_processed = 0
     total_entries = None
-    
+
     base_url = cfg.harvest["base_url"] + "/search-results"
-    
+
     while True:
-        url = f"{base_url}?accession-number={cfg.harvest['accession_prefix']}*&start={start}&length={page_size}"
+        url = (
+            f"{base_url}?accession-number={cfg.harvest['accession_prefix']}*"
+            f"&sort-by=accessionNo&order-by=asc"
+            f"&start={start}&length={page_size}"
+        )
         print(f"Requesting catalog URL: {url}")
-        resp = request_with_retry(client, "GET", url)
+        resp = request_with_retry(client, "GET", url, rps=catalog_rps)
         if resp.status_code != 200:
             print(f"Search results request failed: {resp.status_code}", file=sys.stderr)
             break
-            
+
         soup = BeautifulSoup(resp.text, "html.parser")
-        
+
         # Parse total entries on first page
         if total_entries is None:
             counts_div = soup.find("div", class_="search-result-counts")
             if counts_div:
-                match = re.search(r'of\s+([\d,]+)\s+entries', counts_div.text, re.IGNORECASE)
+                match = re.search(r"of\s+([\d,]+)\s+entries", counts_div.text, re.IGNORECASE)
                 if match:
                     total_entries = int(match.group(1).replace(",", ""))
                     print(f"Total entries to harvest: {total_entries}")
             if total_entries is None:
                 total_entries = 0
-                
+
         table = soup.find("table", id="search-results-table")
         if not table:
             print("Table #search-results-table not found.")
             break
-            
+
         tbody = table.find("tbody")
         if not tbody:
             print("tbody not found in table.")
             break
-            
+
         rows = tbody.find_all("tr", recursive=False)
         if not rows:
             print("No rows found in tbody.")
             break
 
-        acc_prefix_re = re.compile(
-            r'^' + re.escape(cfg.harvest['accession_prefix']) + r'\w+$'
-        )
+        acc_prefix_re = re.compile(r"^" + re.escape(cfg.harvest["accession_prefix"]) + r"\w+$")
 
         new_rows_count = 0
         for row in rows:
@@ -145,7 +166,7 @@ def catalog(limit: int | None = None):
             for a in row.find_all("a"):
                 raw_href = a.get("href", "")
                 href = raw_href if isinstance(raw_href, str) else ""
-                m = re.search(r'osti-id=(\d+)', href)
+                m = re.search(r"osti-id=(\d+)", href)
                 if m:
                     doc_id = m.group(1)
                     title = a.get_text(strip=True)
@@ -164,7 +185,7 @@ def catalog(limit: int | None = None):
             # Year: first 4-digit year (1900–2100) found in any cell
             year = None
             for td in row.find_all("td"):
-                m = re.search(r'\b((?:19|20)\d{2})\b', td.get_text(strip=True))
+                m = re.search(r"\b((?:19|20)\d{2})\b", td.get_text(strip=True))
                 if m:
                     year = int(m.group(1))
                     break
@@ -175,31 +196,32 @@ def catalog(limit: int | None = None):
             for a in row.find_all("a"):
                 raw_href = a.get("href", "")
                 href = raw_href if isinstance(raw_href, str) else ""
-                if re.search(r'\.pdf', href, re.IGNORECASE):
+                if re.search(r"\.pdf", href, re.IGNORECASE):
                     has_fulltext = 1
                     source_url = f"https://www.osti.gov/opennet/servlets/purl/{doc_id}.pdf"
                     break
-                
+
             # Insert into database
             with conn:
                 res = conn.execute(
                     "INSERT OR IGNORE INTO documents (doc_id, accession, title, year, has_fulltext, source_url, status) VALUES (?, ?, ?, ?, ?, ?, 'cataloged')",
-                    (doc_id, accession, title, year, has_fulltext, source_url)
+                    (doc_id, accession, title, year, has_fulltext, source_url),
                 )
                 if res.rowcount > 0:
                     new_rows_count += 1
-                    
+
             total_processed += 1
             if limit and total_processed >= limit:
                 print(f"Limit of {limit} results reached.")
                 return
-                
+
         print(f"Processed {len(rows)} rows on this page. New cataloged: {new_rows_count}")
-        
+
         start += page_size
         if start >= total_entries or total_entries == 0:
             print("Reached end of search results.")
             break
+
 
 def fetch(limit: int | None = None, min_id: int | None = None, max_id: int | None = None):
     conn = connect(cfg)
@@ -220,20 +242,20 @@ def fetch(limit: int | None = None, min_id: int | None = None, max_id: int | Non
         params,
     )
     docs = cur.fetchall()
-    
+
     client = httpx.Client(headers={"User-Agent": cfg.harvest["user_agent"]})
     broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
-    
+
     raw_dir = cfg.storage_root / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
-    
+
     for row in docs:
         doc_id = row["doc_id"]
         source_url = row["source_url"]
-        
+
         tmp_path = raw_dir / f"{doc_id}.tmp"
         dest_path = raw_dir / f"{doc_id}.pdf"
-        
+
         # Skip if file already exists (idempotent)
         if dest_path.exists():
             try:
@@ -243,58 +265,68 @@ def fetch(limit: int | None = None, min_id: int | None = None, max_id: int | Non
                 with conn:
                     conn.execute(
                         "UPDATE documents SET status='fetched', fetched_at=?, sha256=?, local_path=? WHERE doc_id=?",
-                        (now, sha256, str(dest_path), doc_id)
+                        (now, sha256, str(dest_path), doc_id),
                     )
-                print(f"File already exists for {doc_id}. Skipping download and enqueuing OCR job...")
+                print(
+                    f"File already exists for {doc_id}. Skipping download and enqueuing OCR job..."
+                )
                 try:
-                    broker_resp = client.post(f"{broker_url}/enqueue", json={"type": "ocr", "doc_id": doc_id})
+                    broker_resp = client.post(
+                        f"{broker_url}/enqueue", json={"type": "ocr", "doc_id": doc_id}
+                    )
                     if broker_resp.status_code != 200:
-                        print(f"Warning: Failed to enqueue ocr job for {doc_id} via broker (status {broker_resp.status_code})")
+                        print(
+                            f"Warning: Failed to enqueue ocr job for {doc_id} via broker (status {broker_resp.status_code})"
+                        )
                 except Exception as e:
                     print(f"Warning: Failed to connect to broker to enqueue job: {e}")
                 continue
             except Exception as e:
                 print(f"Error reading existing file for {doc_id}: {e}, will re-download.")
-        
+
         print(f"Fetching PDF for document {doc_id} from {source_url}...")
         try:
             resp = request_with_retry(client, "GET", source_url)
             if resp.status_code != 200:
                 raise Exception(f"Download failed with status {resp.status_code}")
-                
+
             pdf_data = resp.content
-            
+
             # Atomic write
             tmp_path.write_bytes(pdf_data)
             tmp_path.rename(dest_path)
-            
+
             sha256 = hashlib.sha256(pdf_data).hexdigest()
             now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            
+
             with conn:
                 conn.execute(
                     "UPDATE documents SET status='fetched', fetched_at=?, sha256=?, local_path=? WHERE doc_id=?",
-                    (now, sha256, str(dest_path), doc_id)
+                    (now, sha256, str(dest_path), doc_id),
                 )
-                
+
             print(f"Successfully fetched {doc_id}. Enqueuing OCR job...")
-            
+
             # Enqueue follow-on ocr job via broker
             try:
-                broker_resp = client.post(f"{broker_url}/enqueue", json={"type": "ocr", "doc_id": doc_id})
+                broker_resp = client.post(
+                    f"{broker_url}/enqueue", json={"type": "ocr", "doc_id": doc_id}
+                )
                 if broker_resp.status_code != 200:
-                    print(f"Warning: Failed to enqueue ocr job for {doc_id} via broker (status {broker_resp.status_code})")
+                    print(
+                        f"Warning: Failed to enqueue ocr job for {doc_id} via broker (status {broker_resp.status_code})"
+                    )
             except Exception as e:
                 print(f"Warning: Failed to connect to broker to enqueue job: {e}")
-                
+
         except Exception as e:
             print(f"Error fetching document {doc_id}: {e}", file=sys.stderr)
             now = datetime.datetime.now(datetime.timezone.utc).isoformat()
             with conn:
                 conn.execute(
-                    "UPDATE documents SET status='error', error=? WHERE doc_id=?",
-                    (str(e), doc_id)
+                    "UPDATE documents SET status='error', error=? WHERE doc_id=?", (str(e), doc_id)
                 )
+
 
 def status():
     conn = connect(cfg)
@@ -304,24 +336,37 @@ def status():
     for row in rows:
         print(f"  {row['status']}: {row['count']}")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OpenNet Harvester CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    
-    catalog_parser = subparsers.add_parser("catalog", help="Catalog NV* docs from OpenNet (accession prefix from config.toml)")
+
+    catalog_parser = subparsers.add_parser(
+        "catalog", help="Catalog NV* docs from OpenNet (accession prefix from config.toml)"
+    )
     catalog_parser.add_argument("--limit", type=int, default=None, help="Max results to catalog")
-    
+    catalog_parser.add_argument(
+        "--start",
+        type=int,
+        default=None,
+        help="Override start offset (default: resume from doc count)",
+    )
+
     fetch_parser = subparsers.add_parser("fetch", help="Download raw PDFs for cataloged documents")
     fetch_parser.add_argument("--limit", type=int, default=None, help="Max PDFs to fetch")
-    fetch_parser.add_argument("--min-id", type=int, default=None, help="Only fetch docs with doc_id >= this value")
-    fetch_parser.add_argument("--max-id", type=int, default=None, help="Only fetch docs with doc_id < this value")
+    fetch_parser.add_argument(
+        "--min-id", type=int, default=None, help="Only fetch docs with doc_id >= this value"
+    )
+    fetch_parser.add_argument(
+        "--max-id", type=int, default=None, help="Only fetch docs with doc_id < this value"
+    )
 
     status_parser = subparsers.add_parser("status", help="Show catalog status counts")
 
     args = parser.parse_args()
 
     if args.command == "catalog":
-        catalog(limit=args.limit)
+        catalog(limit=args.limit, start_offset=args.start)
     elif args.command == "fetch":
         fetch(limit=args.limit, min_id=args.min_id, max_id=args.max_id)
     elif args.command == "status":

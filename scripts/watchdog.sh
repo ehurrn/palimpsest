@@ -14,7 +14,7 @@ UV="$(command -v uv)"
 CHECK_INTERVAL=90   # seconds between full-fleet checks
 STALE_SECS=300      # seconds of log silence → considered stuck
 
-GEMINI_WORKERS=0  # set > 0 to re-enable
+GEMINI_WORKERS=1  # set 0 to disable
 GEMINI_BATCH=15
 
 GONKTOP="herren@192.168.0.58"
