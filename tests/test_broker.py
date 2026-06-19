@@ -322,3 +322,53 @@ def test_enqueue_rejects_unsafe_doc_id(client):
     conn = connect(cfg)
     assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
 
+
+def test_release_returns_job_to_pending(client):
+    """POST /release resets a leased job to pending."""
+    enqueue_resp = client.post("/enqueue", json={"type": "extract", "doc_id": "555", "priority": 5})
+    assert enqueue_resp.status_code == 200
+    job_id = enqueue_resp.json()["job_id"]
+
+    lease_resp = client.post("/lease", json={"worker_id": "worker-x", "capabilities": ["extract"], "max_jobs": 1})
+    assert lease_resp.status_code == 200
+    assert lease_resp.json()["jobs"][0]["job_id"] == job_id
+
+    release_resp = client.post("/release", json={"worker_id": "worker-x", "job_id": job_id})
+    assert release_resp.status_code == 200
+    assert release_resp.json()["ok"] is True
+
+    counts = client.get("/status").json()["job_counts"]
+    assert counts.get("extract", {}).get("pending", 0) == 1
+
+
+def test_release_does_not_increment_attempts(client):
+    """POST /release must not increment attempts — infra shutdown is not a job failure."""
+    enqueue_resp = client.post("/enqueue", json={"type": "extract", "doc_id": "556", "priority": 5})
+    job_id = enqueue_resp.json()["job_id"]
+    client.post("/lease", json={"worker_id": "worker-y", "capabilities": ["extract"], "max_jobs": 1})
+    client.post("/release", json={"worker_id": "worker-y", "job_id": job_id})
+
+    lease2_resp = client.post("/lease", json={"worker_id": "worker-y", "capabilities": ["extract"], "max_jobs": 1})
+    assert lease2_resp.status_code == 200
+    jobs2 = lease2_resp.json()["jobs"]
+    assert any(j["job_id"] == job_id for j in jobs2), "Job should be re-leaseable after release"
+
+
+def test_release_rejects_wrong_owner(client):
+    """POST /release returns 409 if worker_id doesn't own the job."""
+    enqueue_resp = client.post("/enqueue", json={"type": "extract", "doc_id": "557", "priority": 5})
+    job_id = enqueue_resp.json()["job_id"]
+    client.post("/lease", json={"worker_id": "real-owner", "capabilities": ["extract"], "max_jobs": 1})
+
+    resp = client.post("/release", json={"worker_id": "imposter", "job_id": job_id})
+    assert resp.status_code == 409
+
+
+def test_release_rejects_non_leased_job(client):
+    """POST /release returns 409 for a job not in leased state."""
+    enqueue_resp = client.post("/enqueue", json={"type": "extract", "doc_id": "558", "priority": 5})
+    job_id = enqueue_resp.json()["job_id"]
+    # job is pending, not leased
+    resp = client.post("/release", json={"worker_id": "any-worker", "job_id": job_id})
+    assert resp.status_code == 409
+

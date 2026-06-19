@@ -26,11 +26,26 @@ logging.basicConfig(
 cfg = load()
 should_exit = False
 broker_backoff = 5.0
+_current_job_id: int | None = None
+_current_worker_id: str | None = None
+
 
 def signal_handler(signum, frame):
-    global should_exit
+    global should_exit, _current_job_id, _current_worker_id
     logging.info(f"Received signal {signum}. Exiting cleanly after current job...")
     should_exit = True
+
+    if _current_job_id is not None and _current_worker_id is not None:
+        broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
+        try:
+            httpx.post(
+                f"{broker_url}/release",
+                json={"worker_id": _current_worker_id, "job_id": _current_job_id},
+                timeout=5.0,
+            )
+            logging.info(f"Released job {_current_job_id} back to queue on shutdown.")
+        except Exception as e:
+            logging.warning(f"Could not release job {_current_job_id} on shutdown: {e}")
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
@@ -149,10 +164,14 @@ def run_worker(node_name: str, once: bool = False):
             job_id = job["job_id"]
             job_type = job["type"]
             doc_id = job["doc_id"]
-            
+
             logging.info(f"Leased job {job_id} ({job_type}) for doc {doc_id}")
             start_time = time.time()
-            
+
+            # Track current job so signal_handler can release it on SIGTERM
+            _current_job_id = job_id
+            _current_worker_id = node_name
+
             # Setup heartbeat events and thread
             stop_evt = threading.Event()
             lost_evt = threading.Event()
@@ -162,7 +181,7 @@ def run_worker(node_name: str, once: bool = False):
                 daemon=True
             )
             hb_thread.start()
-            
+
             # Find and execute handler
             handler_func = HANDLERS.get(job_type)
             if not handler_func:
@@ -177,17 +196,19 @@ def run_worker(node_name: str, once: bool = False):
                     },
                     timeout=10.0,
                 )
+                _current_job_id = None
+                _current_worker_id = None
                 stop_evt.set()
                 hb_thread.join()
                 if once:
                     break
                 continue
-                
+
             try:
                 # Execute handler
                 result = handler_func(cfg, job)
                 duration = time.time() - start_time
-                
+
                 # Check if job was lost during execution
                 if lost_evt.is_set():
                     logging.warning(f"Discarding result for job {job_id} since it was lost.")
@@ -226,10 +247,12 @@ def run_worker(node_name: str, once: bool = False):
                     },
                     timeout=10.0,
                 )
-                
+
+            _current_job_id = None
+            _current_worker_id = None
             stop_evt.set()
             hb_thread.join()
-            
+
             if once:
                 break
                 

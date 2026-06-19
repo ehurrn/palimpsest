@@ -2,6 +2,8 @@
 
 ## 2026-06-18
 - Starting TASK-20 Part B: Decade-sharded FAISS index. Files in scope: indexer.py (build_index, run_gapjoin), results.py (process_embed, process_features), tasks/embed.py (embed_task), config.toml ([embed]).
+- Starting TASK-20 Part C: Worker graceful SIGTERM release. Files: broker.py (POST /release), worker.py (_current_job_id globals + signal handler + job tracking).
+- Completed TASK-20 Part C: broker POST /release validates ownership, resets state to pending, no attempt increment. Worker _current_job_id/_current_worker_id globals track active job; signal_handler calls /release on SIGTERM when job active, clears globals; job processing block sets/clears globals around handler execution. 4 new tests in test_broker.py, 3 new tests in test_worker_release.py; all 207 tests green.
 - Completed TASK-20 Part B: FAISS index now sharded by decade. Added _build_shard helper; build_index scans shards/DECADE/ dirs then falls back to legacy faiss.idx. run_gapjoin discovers all shards at startup, merges search results globally, reconstructs vectors shard-by-shard. process_embed routes to shards/DECADE/ when year present, falls back to flat index/. process_features enqueues embed job with year in payload JSON. embed_task reads year from payload, returns it in result. config.toml [embed] shard_by = "decade". 5 new tests in tests/test_indexer_sharding.py; all 200 tests green.
 
 ## 2026-06-13

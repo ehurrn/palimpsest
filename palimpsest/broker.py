@@ -68,6 +68,10 @@ class FailPayload(BaseModel):
     error: str
     retryable: bool
 
+class ReleasePayload(BaseModel):
+    worker_id: str
+    job_id: int
+
 # Helper for UTC ISO-8601 timestamps
 def utc_now_str() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -305,6 +309,33 @@ def fail(req: FailPayload):
             )
             
     return {"status": "recorded"}
+
+@app.post("/release")
+def release(req: ReleasePayload):
+    """Return a leased job to pending without penalising attempts.
+
+    Called by workers on graceful SIGTERM. Only the current lease_owner may
+    call release. Resets state to 'pending' and clears lease fields without
+    incrementing attempts (infrastructure shutdown is not a job failure).
+    """
+    conn = connect(cfg)
+    now = utc_now_str()
+
+    with conn:
+        cur = conn.execute(
+            "SELECT state, lease_owner FROM jobs WHERE job_id=?", (req.job_id,)
+        )
+        job = cur.fetchone()
+        if not job or job["state"] != "leased" or job["lease_owner"] != req.worker_id:
+            raise HTTPException(status_code=409, detail="Ownership mismatch or job not leased")
+
+        conn.execute(
+            "UPDATE jobs SET state='pending', lease_owner=NULL, lease_expires_at=NULL, updated_at=? WHERE job_id=?",
+            (now, req.job_id),
+        )
+
+    return {"ok": True}
+
 
 @app.get("/status")
 def status():
