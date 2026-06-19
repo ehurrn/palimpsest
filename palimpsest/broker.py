@@ -213,25 +213,31 @@ def lease(req: LeasePayload):
     """
     params = req.capabilities + [req.max_jobs]
     
-    # We run in a transaction to avoid lease races
-    with conn:
-        cur = conn.execute(query, params)
-        rows = cur.fetchall()
-        leased_jobs = []
+    # BEGIN IMMEDIATE acquires the write lock before the SELECT so concurrent
+    # /lease calls cannot read the same pending rows and double-lease them.
+    # On lock contention SQLite will retry for busy_timeout ms before raising.
+    leased_jobs = []
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        rows = conn.execute(query, params).fetchall()
         for row in rows:
             job_id = row["job_id"]
             conn.execute(
                 "UPDATE jobs SET state='leased', lease_owner=?, lease_expires_at=?, attempts=attempts+1, updated_at=? WHERE job_id=?",
-                (req.worker_id, expires, now_str, job_id)
+                (req.worker_id, expires, now_str, job_id),
             )
             leased_jobs.append({
                 "job_id": job_id,
                 "type": row["type"],
                 "doc_id": row["doc_id"],
                 "payload": json.loads(row["payload"]),
-                "lease_expires_at": expires
+                "lease_expires_at": expires,
             })
-        return {"jobs": leased_jobs}
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return {"jobs": leased_jobs}
 
 @app.post("/heartbeat")
 def heartbeat(req: HeartbeatPayload):
