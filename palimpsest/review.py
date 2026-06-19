@@ -3,7 +3,6 @@ import argparse
 import datetime
 import hashlib
 import json
-import re
 import sys
 from typing import Optional
 
@@ -405,97 +404,77 @@ def handle_audit(cfg: Config):
         print(f"Failed to read audit log: {e}")
 
 def apply_heuristic(cfg: Config):
-    """Apply birth-year and document-date safety heuristic to classify pending reviews."""
+    """Apply 75-year document-age heuristic to classify person entities with living_status='unknown'.
+
+    For each unknown-status person entity whose source document is >75 years old:
+      - Sets living_status = 'deceased_historical'
+      - Inserts an approved row into review_queue (decided_by='HEURISTIC_AUTO')
+    For entities whose document is <=75 years old or has no year:
+      - Sets living_status = 'potentially_living'
+    All updates run in a single transaction.
+    Prints: entities evaluated, marked historical, flagged as potentially_living.
+    """
     conn = connect(cfg)
     current_year = datetime.datetime.now().year
-    
-    # Fetch pending review queue items
+
     cur = conn.execute("""
-        SELECT rq.review_id, rq.entity_id, e.doc_id, e.page_no, e.text, e.norm, d.year AS doc_year
-        FROM review_queue rq
-        JOIN entities e ON rq.entity_id = e.entity_id
+        SELECT DISTINCT e.entity_id, e.norm, e.doc_id, d.year AS doc_year
+        FROM entities e
         LEFT JOIN documents d ON e.doc_id = d.doc_id
-        WHERE rq.status = 'pending'
+        WHERE e.kind = 'person' AND e.living_status = 'unknown'
     """)
     items = cur.fetchall()
+
     if not items:
-        print("No pending items in review queue to classify.")
+        print("No unknown-status person entities to classify.")
         conn.close()
         return
-        
-    print(f"Running safety heuristic on {len(items)} pending review items...")
-    
+
+    print(f"Running 75-year heuristic on {len(items)} person entities...")
+
     approved_count = 0
-    denied_count = 0
-    
-    birth_patterns = [
-        re.compile(r'\b(?:born|b\.|birth(?:\s+date)?)\s*[:\-\s]?\s*(\d{4})\b', re.IGNORECASE),
-        re.compile(r'\(\s*(?:b\.\s*)?(\d{4})\s*-\s*(?:\d{4}|present)?\s*\)', re.IGNORECASE)
-    ]
-    
-    for item in items:
-        review_id = item["review_id"]
-        doc_id = item["doc_id"]
-        page_no = item["page_no"]
-        text = item["text"]
-        norm = item["norm"]
-        doc_year = item["doc_year"]
-        
-        # Try to find birth year from the page text
-        birth_year = None
-        cur_page = conn.execute("SELECT text FROM pages WHERE doc_id = ? AND page_no = ?", (doc_id, page_no))
-        page_row = cur_page.fetchone()
-        if page_row and page_row["text"]:
-            page_text = page_row["text"]
-            for pat in birth_patterns:
-                m = pat.search(page_text)
-                if m:
-                    birth_year = int(m.group(1))
-                    break
-                    
-        # Apply heuristic
-        is_deceased = False
-        reason = ""
-        
-        if doc_year is not None:
-            doc_age = current_year - doc_year
-            if doc_age > 75:
-                is_deceased = True
-                reason = f"Document year {doc_year} is > 75 years old ({doc_age} years)"
-            elif birth_year is not None:
-                age_at_doc = doc_year - birth_year
-                if age_at_doc > 100:
-                    is_deceased = True
-                    reason = f"Subject age at document date ({doc_year} - birth year {birth_year}) is {age_at_doc} > 100"
-                    
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        if is_deceased:
-            with conn:
+    flagged_count = 0
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    seen_norms: set[str] = set()
+
+    with conn:
+        for item in items:
+            norm = item["norm"]
+            if norm in seen_norms:
+                continue
+            seen_norms.add(norm)
+
+            doc_year = item["doc_year"]
+            is_deceased = doc_year is not None and (current_year - doc_year) > 75
+
+            if is_deceased:
                 conn.execute(
-                    "UPDATE entities SET living_status = 'deceased_historical' WHERE norm = ? AND kind = 'person'",
-                    (norm,)
+                    "UPDATE entities SET living_status = 'deceased_historical' "
+                    "WHERE norm = ? AND kind = 'person' AND living_status = 'unknown'",
+                    (norm,),
                 )
-                conn.execute("""
-                    UPDATE review_queue 
-                    SET status = 'approved', decided_by = 'HEURISTIC', decided_at = ?
-                    WHERE entity_id IN (SELECT entity_id FROM entities WHERE norm = ?) AND status = 'pending'
-                """, (now, norm))
                 conn.execute(
-                    "UPDATE review_queue SET status = 'approved', decided_by = 'HEURISTIC', decided_at = ? WHERE review_id = ?",
-                    (now, review_id)
+                    "INSERT INTO review_queue (entity_id, reason, status, decided_by, decided_at) "
+                    "VALUES (?, 'Auto-approved via 75-year document age heuristic', 'approved', 'HEURISTIC_AUTO', ?)",
+                    (item["entity_id"], now),
                 )
-            log_decision_to_audit(cfg, review_id, norm, "approved", "HEURISTIC", now)
-            print(f"[APPROVE] {text} ({norm}) - {reason}")
-            approved_count += 1
-        else:
-            with conn:
+                log_decision_to_audit(cfg, item["entity_id"], norm, "approved", "HEURISTIC_AUTO", now)
+                approved_count += 1
+            else:
                 conn.execute(
-                    "UPDATE entities SET living_status = 'potentially_living' WHERE norm = ? AND kind = 'person' AND living_status = 'unknown'",
-                    (norm,)
+                    "UPDATE entities SET living_status = 'potentially_living' "
+                    "WHERE norm = ? AND kind = 'person' AND living_status = 'unknown'",
+                    (norm,),
                 )
-            denied_count += 1
-            
-    print(f"Heuristic classification completed: approved {approved_count} as deceased_historical, updated {denied_count} to potentially_living.")
+                flagged_count += 1
+
+    total = approved_count + flagged_count
+    print(
+        f"Heuristic complete: {total} evaluated, "
+        f"{approved_count} marked deceased_historical, "
+        f"{flagged_count} flagged as potentially_living."
+    )
     conn.close()
 
 def handle_links(cfg: Config):

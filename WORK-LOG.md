@@ -192,3 +192,6 @@
   6. scorers/type_b.py: removed unused get_ollama_embedding import
   7. 7 test files: removed unused imports, split compound imports/semicolons, dropped unused result assignments
   ruff: 0 errors (was 21). ty: 0 errors (was 1). 190 tests green.
+
+## 2026-06-18 (TASK-20 Part A — heuristic auto-approver — Sentinel, on main)
+- Starting task: align apply_heuristic() to spec. Old version queries review_queue (should query entities), uses HEURISTIC (should be HEURISTIC_AUTO), UPDATEs existing rows (should INSERT new approved rows), has birth-year regex (spec: 75-year doc-age only). Plan file: docs/superpowers/plans/2026-06-18-task20-phase2-scaling-safety.md Part A.
