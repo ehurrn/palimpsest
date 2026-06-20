@@ -114,6 +114,22 @@ start_m5_worker() {
         2>/dev/null && log "    launched" || log "    SSH failed"
 }
 
+enqueue_briefs() {
+    log "  → enqueuing brief jobs on gonktop"
+    local count
+    count=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$GONKTOP" \
+        'cd ~/dev/palimpsest && ~/.local/bin/uv run python -m palimpsest.orchestrator enqueue-brief 2>/dev/null' \
+        2>/dev/null | grep -oE '[0-9]+' | head -1 || echo "0")
+    log "    enqueued ${count} brief job(s)"
+}
+
+start_harvester_fetch() {
+    log "  → starting harvester fetch on gonktop"
+    ssh -o BatchMode=yes "$GONKTOP" \
+        'nohup bash -c "cd ~/dev/palimpsest && git pull -q origin main && ~/.local/bin/uv run python -m palimpsest.harvester fetch" </dev/null >>/tmp/palimpsest-harvest.log 2>&1 &' \
+        2>/dev/null && log "    launched" || log "    SSH failed"
+}
+
 # ---------------------------------------------------------------------------
 # Check functions  (0 = healthy, 1 = needs restart)
 # ---------------------------------------------------------------------------
@@ -191,6 +207,28 @@ check_m5_worker() {
     log "M5 worker: ok (log ${age}s ago)"
 }
 
+check_brief_queue() {
+    # Returns 1 (needs enqueue) if brief queue is empty (no pending or leased jobs)
+    local pending leased
+    pending=$(curl -sf --max-time 5 "http://192.168.0.58:8077/status" \
+        | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('job_counts',{}).get('brief',{}).get('pending',0))" 2>/dev/null || echo 0)
+    leased=$(curl -sf --max-time 5 "http://192.168.0.58:8077/status" \
+        | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('job_counts',{}).get('brief',{}).get('leased',0))" 2>/dev/null || echo 0)
+    log "brief queue: pending=${pending} leased=${leased}"
+    [ "$pending" -gt 0 ] || [ "$leased" -gt 0 ]
+}
+
+check_harvester() {
+    local pids unfetched
+    pids=$(remote_pids "$GONKTOP" "palimpsest.harvester")
+    unfetched=$(curl -sf --max-time 5 "http://192.168.0.58:8077/harvest/stats" \
+        | python3 -c "import json,sys; print(json.load(sys.stdin).get('pdf_unfetched',0))" 2>/dev/null || echo 0)
+    if [ -z "$pids" ] && [ "$unfetched" -gt 500 ]; then
+        log "harvester: NOT running, ${unfetched} PDFs unfetched"; return 1
+    fi
+    log "harvester: ${pids:+running (PID $pids), }${unfetched} unfetched PDFs"
+}
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -209,5 +247,9 @@ check_gonktop_worker || { kill_remote "$GONKTOP" "palimpsest.worker.*gonktop"; s
 
 # M5
 check_m5_worker || { kill_remote "$M5" "palimpsest.worker.*m5"; sleep 1; start_m5_worker; }
+
+# Brief jobs — enqueue for any newly indexed docs, restart harvester if stalled
+check_brief_queue || enqueue_briefs
+check_harvester   || start_harvester_fetch
 
 log "=== check complete ==="
