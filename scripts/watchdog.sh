@@ -115,6 +115,14 @@ start_m5_worker() {
 }
 
 
+enqueue_briefs() {
+    local count
+    count=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$GONKTOP" \
+        'cd ~/dev/palimpsest && ~/.local/bin/uv run python -m palimpsest.orchestrator enqueue-brief 2>/dev/null' \
+        2>/dev/null | grep -oE '[0-9]+' | head -1 || echo "0")
+    log "brief: enqueued ${count} new job(s)"
+}
+
 start_harvester_fetch() {
     log "  → starting harvester fetch on gonktop"
     ssh -o BatchMode=yes "$GONKTOP" \
@@ -228,5 +236,8 @@ check_m5_worker || { kill_remote "$M5" "palimpsest.worker.*m5"; sleep 1; start_m
 
 # Harvester — restart if not running
 check_harvester || start_harvester_fetch
+
+# Brief jobs — enqueue for any newly indexed docs (idempotent, skips existing)
+enqueue_briefs
 
 log "=== check complete ==="
