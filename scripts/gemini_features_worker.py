@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from palimpsest.config import load as load_config  # noqa: E402
 
 AGY_BIN = "/Users/herren/.local/bin/agy"
-MODEL = "gemini-3.1-flash-lite"
+MODEL = "Claude Sonnet 4.6 (Thinking)"
 WORKER_ID = "gemini-features"
 
 MAX_CHARS_PER_PAGE = 4000  # per-page cap; keeps very long pages from dominating
@@ -114,13 +114,15 @@ def call_gemini(prompt: str) -> str:
         raise RuntimeError(f"agy exit {r.returncode}: {r.stderr[:400]}")
     out = r.stdout.strip()
     if not out:
-        raise RuntimeError("agy returned empty — Gemini quota likely exhausted")
+        raise RuntimeError("agy returned empty — quota likely exhausted")
     return out
 
 
 def extract_json(text: str) -> dict:
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
+    # Strip thinking-mode preamble from Claude or Qwen
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     text = text.strip()
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1:
