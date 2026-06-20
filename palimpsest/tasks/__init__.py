@@ -37,3 +37,8 @@ try:
     import palimpsest.tasks.gapjoin  # noqa: F401
 except ImportError:
     pass
+
+try:
+    import palimpsest.tasks.brief  # noqa: F401
+except ImportError:
+    pass

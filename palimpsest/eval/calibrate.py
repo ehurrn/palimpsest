@@ -39,9 +39,9 @@ def choose_threshold(points, target_precision: float, z: float, min_cases: int) 
 
 def fit_type(conn, run_id, type_key, cfg: Config) -> dict:
     points = collect_points(conn, run_id, type_key)
-    target = float(cfg.eval.get("target_precision", 0.90))
-    z = float(cfg.eval.get("wilson_z", 1.96))
-    min_cases = int(cfg.eval.get("min_cases", 40))
+    target = float(cfg.orchestrator.get("target_precision", 0.90))
+    z = float(cfg.orchestrator.get("wilson_z", 1.96))
+    min_cases = int(cfg.orchestrator.get("min_cases", 40))
     out = choose_threshold(points, target, z, min_cases)
     out["isotonic"] = fit_isotonic(points)
     return out
@@ -60,16 +60,16 @@ def build_artifact(conn, run_id, cfg: Config) -> dict:
         "scorer_git_sha": run[0] if run else None,
         "corpus_hash": run[1] if run else None,
         "config": {
-            "target_precision": float(cfg.eval.get("target_precision", 0.90)),
-            "wilson_z": float(cfg.eval.get("wilson_z", 1.96)),
-            "min_cases": int(cfg.eval.get("min_cases", 40)),
+            "target_precision": float(cfg.orchestrator.get("target_precision", 0.90)),
+            "wilson_z": float(cfg.orchestrator.get("wilson_z", 1.96)),
+            "min_cases": int(cfg.orchestrator.get("min_cases", 40)),
         },
         "types": {tk: fit_type(conn, run_id, tk, cfg) for tk in type_keys},
     }
 
 
 def write_artifact(cfg: Config, artifact: dict) -> Path:
-    path = Path(cfg.eval["artifact_path"])
+    path = Path(cfg.orchestrator["artifact_path"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(artifact, indent=2))
     return path

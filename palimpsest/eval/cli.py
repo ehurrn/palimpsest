@@ -32,6 +32,24 @@ def _cmd_run(args):
         print(f"  {type_key:8} {label:3} {n}")
 
 
+def _cmd_calibrate(args):
+    import sqlite3
+    from palimpsest.eval.calibrate import build_artifact, write_artifact
+    cfg = load(args.config)
+    ev = make_eval_config(cfg)
+    conn = sqlite3.connect(ev.db_path)
+    run_id = args.run if args.run is not None else conn.execute(
+        "SELECT MAX(run_id) FROM eval_runs").fetchone()[0]
+    if run_id is None:
+        raise SystemExit("no eval runs found — run `palimpsest-eval run` first")
+    artifact = build_artifact(conn, run_id, cfg)
+    conn.close()
+    path = write_artifact(cfg, artifact)
+    print(f"calibrated run_id={run_id} → {path}")
+    for tk, t in artifact["types"].items():
+        print(f"  {tk:8} threshold={t['threshold']} n={t['n']} ({t['reason']})")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="palimpsest-eval")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -43,6 +61,10 @@ def main(argv=None):
     r.add_argument("--real-embed", action="store_true", dest="real_embed",
                    help="use the production Ollama embedder instead of the lexical stub")
     r.set_defaults(func=_cmd_run)
+    c = sub.add_parser("calibrate", help="fit per-type thresholds → calibration.json")
+    c.add_argument("--config", default="config.toml")
+    c.add_argument("--run", type=int, default=None, help="run_id (default: latest)")
+    c.set_defaults(func=_cmd_calibrate)
     args = p.parse_args(argv)
     args.func(args)
 

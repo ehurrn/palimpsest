@@ -27,6 +27,7 @@ class Config:
     models: Dict[str, Any]
     nodes: Dict[str, Any]
     orchestrator: Dict[str, Any]
+    brief: Dict[str, Any]
 
 def load(path: str | Path | None = None) -> Config:
     if not path:
@@ -69,4 +70,11 @@ def load(path: str | Path | None = None) -> Config:
         models=data["models"],
         nodes=data["nodes"],
         orchestrator=data.get("orchestrator", {}),
+        brief=data.get("brief", {
+            "model": data.get("models", {}).get("extract", "llama3.1:8b"),
+            "window_tokens": 6000,
+            "max_claims": 25,
+            "max_events": 25,
+            "temperature": 0.1,
+        }),
     )

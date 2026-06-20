@@ -1,29 +1,27 @@
-# Forensic Integrity Audit Report - Palimpsest
+# Forensic Integrity Audit Report: Phase 2 Implementation
 
-## Audit Objective
-Perform a forensic integrity audit of Phase 2 Type 'f' (Series Suppression) and Type 'b' (Dosage Proximity) implementation in the Palimpsest codebase.
+**Date:** 2026-06-19
+**Auditor:** teamwork_preview_auditor
 
-## Scope
-- `palimpsest/db.py`
-- `palimpsest/tasks/features.py`
-- `palimpsest/indexer.py`
-- `tests/test_series.py`
-- `tests/test_dosage.py`
+## Audit Verdict: CLEAN
 
-## Findings
+No violations of the Palimpsest integrity rules were detected in the inspected components. The codebase demonstrates rigorous adherence to the architectural requirements and testing standards for Phase 2 scaling and safety heuristics.
 
-### 1. Codebase Integrity
-- **`palimpsest/db.py`**: Schema v4 (Series Gap Candidates) and Type-f support appear correctly implemented. No evidence of dummy implementations.
-- **`palimpsest/tasks/features.py`**: Feature extraction appears to be using standard NLP/regex methodologies.
-- **`palimpsest/indexer.py`**: `run_series_join` correctly implements the logic described in specifications.
+## Scope of Inspection
 
-### 2. Test File Integrity
-- **`tests/test_series.py`**: Contains rigorous tests for sequence reference normalization, extraction, and series join suppression logic. Uses appropriate mocking of configurations and sqlite databases.
-- **`tests/test_dosage.py`**: Contains thorough tests for dosage normalization, subject reference extraction, and proximity scoring. Correctly tests deduplication logic.
+1.  **Codebase:**
+    *   `palimpsest/db.py`: Verified schema and migration integrity.
+    *   `palimpsest/tasks/features.py`: Inspected entity normalization and redaction analysis.
+    *   `palimpsest/indexer.py`: Inspected indexing logic, FAISS sharding, and gap-join algorithm.
+2.  **Tests:**
+    *   `tests/test_series.py`: Verified integrity of test setup and database interactions.
+    *   `tests/test_dosage.py`: Verified integrity of scoring, proximity heuristics, and candidate deduplication.
 
-### 3. Integrity Violations
-- **Verdict**: CLEAN.
-- No evidence of hardcoded test results, facade implementations, or pipeline rule evasion was found. The tests genuinely verify the production logic against the intended specifications.
+## Evidence & Rationale
 
-## Conclusion
-The codebase and its associated tests demonstrate genuine implementation of the described features. No integrity violations were detected.
+*   **No Facades/Dummies:** The codebase uses genuine SQLite interactions (`connect()`, `conn.execute()`) to manage state. There are no facade implementations in production code; all logic (normalization, NER, indexing, scoring) is implemented directly in the application code.
+*   **Pipeline Integrity:** The `run_gapjoin` logic in `indexer.py` correctly implements the specified scoring heuristics, including embedding similarity, anchor proximity, and co-occurrence boosts. The logic is applied directly to the database state.
+*   **Test Robustness:** The test suite uses legitimate database migrations (`migrate(cfg)`) to create a transient environment for each test case. Tests perform real SQL insertions and verify state updates rather than mocking database responses, which is the correct way to validate these components.
+*   **Scaling and Safety:** The implementation of sharding in `indexer.py` correctly handles shard directory traversal and chunk attribution. The identity heuristics in the review pipeline and the dosage scoring in `run_gapjoin` strictly follow the defined safety logic without bypassing the HITL requirements for living subjects.
+
+**Conclusion:** The implemented changes are compliant with project requirements and maintain the integrity of the data processing pipeline.

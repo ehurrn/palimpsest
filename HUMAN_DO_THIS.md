@@ -1,5 +1,5 @@
 ## HUMAN_DO_THIS
-- None
+- Please execute the created script to reprioritize feature jobs: `python3 /Users/herren/dev/palimpsest/scripts/update_jobs.py`
 
 ## 2026-06-19 05:32 — Features pipeline starved by OCR job_id ordering
 

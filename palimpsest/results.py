@@ -147,6 +147,10 @@ def process_features(
             "UPDATE jobs SET state='pending', payload=?, updated_at=? WHERE type='embed' AND doc_id=?",
             (payload_json, now, doc_id),
         )
+    # Enqueue brief alongside embed (brief only needs OCR text; gating on
+    # features_done means entities exist for later prompt enrichment and
+    # avoids racing OCR).
+    _enqueue_followon(conn, "brief", doc_id, now)
 
 
 def process_embed(
@@ -191,6 +195,43 @@ def process_extract(
     dest_path.write_text(json.dumps(result))
 
 
+def process_brief(
+    conn: sqlite3.Connection, cfg: Config, doc_id: str, result: Any, now: str
+) -> None:
+    """Persist a completed brief: write JSON file and upsert one briefs row.
+
+    Brief is terminal — it enqueues no follow-on jobs.
+    Scores (interest_score, novelty_score) are left NULL; triage fills them.
+    """
+    briefs_dir = cfg.storage_root / "briefs"
+    briefs_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = briefs_dir / f"{doc_id}.tmp"
+    dest_path = briefs_dir / f"{doc_id}.json"
+    tmp_path.write_text(json.dumps(result))
+    tmp_path.rename(dest_path)
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO briefs
+          (doc_id, model, doc_type, summary,
+           claims_json, events_json, redactions_json, flags_json,
+           interest_score, novelty_score, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+        """,
+        (
+            doc_id,
+            result.get("model"),
+            result.get("doc_type"),
+            result.get("summary"),
+            json.dumps(result.get("claims", [])),
+            json.dumps(result.get("events", [])),
+            json.dumps(result.get("redaction_hypotheses", [])),
+            json.dumps(result.get("flags", [])),
+            now,
+        ),
+    )
+
+
 ResultProcessor = Callable[[sqlite3.Connection, Config, str, Any, str], None]
 
 RESULT_PROCESSORS: dict[str, ResultProcessor] = {
@@ -198,6 +239,7 @@ RESULT_PROCESSORS: dict[str, ResultProcessor] = {
     "features": process_features,
     "embed": process_embed,
     "extract": process_extract,
+    "brief": process_brief,
 }
 
 

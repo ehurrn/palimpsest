@@ -1,6 +1,6 @@
 # Gonktop Deployment Runbook
 
-Target machine: **gonktop** (the always-on Linux/macOS box at 192.168.0.58).  
+Target machine: **gonktop** (the always-on Linux box at 192.168.0.58).  
 All commands run as the service user (e.g. `herren`) unless noted.
 
 ---

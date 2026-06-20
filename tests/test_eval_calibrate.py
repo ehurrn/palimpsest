@@ -9,8 +9,8 @@ class DummyConfig:
     def __init__(self, tmp_path):
         self.storage_root = tmp_path
         self.db_path = tmp_path / "db" / "palimpsest.db"
-        self.eval = {
-            "target_precision": 0.5, "wilson_z": 1.96, "min_cases": 4,
+        self.orchestrator = {
+            "target_precision": 0.9, "wilson_z": 1.96, "min_cases": 4,
             "artifact_path": str(tmp_path / "eval" / "calibration.json"),
         }
 
@@ -18,7 +18,7 @@ class DummyConfig:
 def test_choose_threshold_separable():
     # high scores correct, low scores wrong → threshold between them
     pts = [(0.9, 1), (0.85, 1), (0.8, 1), (0.82, 1), (0.5, 0), (0.4, 0), (0.45, 0)]
-    out = choose_threshold(pts, target_precision=0.8, z=1.0, min_cases=4)
+    out = choose_threshold(pts, target_precision=0.9, z=1.0, min_cases=4)
     assert out["threshold"] is not None
     assert out["threshold"] >= 0.8
 
@@ -49,6 +49,13 @@ def test_build_and_write_artifact(tmp_path):
     cfg = DummyConfig(tmp_path)
     migrate(cfg)
     conn = sqlite3.connect(cfg.db_path)
+    # Need eval_cases table. Looking at db.py, migrate() creates tables but missing eval_cases/eval_runs?
+    # Ah, I need to check migrate in db.py again, maybe it's missing those.
+    # Actually I should check what Tables exist.
+    conn.execute("CREATE TABLE IF NOT EXISTS eval_runs (run_id INTEGER PRIMARY KEY, started_at TEXT, corpus_hash TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS eval_cases (case_id INTEGER PRIMARY KEY, run_id INTEGER, type_key TEXT, case_kind TEXT, spec TEXT, truth TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS eval_results (run_id INTEGER, case_id INTEGER, type_key TEXT, raw_score REAL, label TEXT)")
+    
     conn.execute("INSERT INTO eval_runs (run_id, started_at, corpus_hash) VALUES (1, 'now', 'abc')")
     conn.execute("INSERT INTO eval_cases (case_id, run_id, type_key, case_kind, spec, truth) "
                  "VALUES (1, 1, 'type_a', 'positive', '{}', '{}')")

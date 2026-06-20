@@ -243,6 +243,25 @@ def migrate(cfg: Config) -> None:
             except sqlite3.OperationalError:
                 pass
             conn.execute("UPDATE schema_version SET version = 3")
+
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        if version < 4:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS briefs (
+                  doc_id          TEXT PRIMARY KEY REFERENCES documents(doc_id),
+                  model           TEXT,
+                  doc_type        TEXT,
+                  summary         TEXT,
+                  claims_json     TEXT,
+                  events_json     TEXT,
+                  redactions_json TEXT,
+                  flags_json      TEXT,
+                  interest_score  REAL,
+                  novelty_score   REAL,
+                  created_at      TEXT
+                )
+            """)
+            conn.execute("UPDATE schema_version SET version = 4")
     conn.close()
 
 if __name__ == "__main__":

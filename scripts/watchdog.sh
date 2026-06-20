@@ -2,19 +2,19 @@
 # Fleet watchdog — monitors all three machines on the LAN.
 # Runs on M4 (local). Checks gonktop and M5 via SSH.
 # Restarts any process that is dead or whose log has been silent for STALE_SECS.
+# Designed to be invoked by cron every 15 minutes — runs one check cycle and exits.
 #
-# Usage:
-#   nohup bash scripts/watchdog.sh </dev/null >>/tmp/watchdog.log 2>&1 &
+# Cron entry (crontab -e):
+#   */15 * * * * bash /Users/herren/dev/palimpsest/scripts/watchdog.sh >>/tmp/watchdog.log 2>&1
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 UV="$(command -v uv)"
 
-CHECK_INTERVAL=90   # seconds between full-fleet checks
-STALE_SECS=300      # seconds of log silence → considered stuck
+STALE_SECS=900      # seconds of log silence → considered stuck (1 check cycle = 15 min)
 
-GEMINI_WORKERS=0  # disabled — agy budget exhausted, re-enable when quota refreshes
+GEMINI_WORKERS=0  # disabled — agy quota exhausted
 GEMINI_BATCH=15
 GEMINI_CONCURRENCY=4
 
@@ -196,22 +196,18 @@ check_m5_worker() {
 # ---------------------------------------------------------------------------
 
 cd "$REPO"
-log "=== Fleet watchdog started (${CHECK_INTERVAL}s interval, ${STALE_SECS}s stale threshold) ==="
+log "=== Fleet watchdog check (stale threshold ${STALE_SECS}s) ==="
 log "    Watching: M4 (local) · gonktop (192.168.0.58) · M5 (192.168.0.63)"
 
-while true; do
-    log "--- check ---"
+# M4 local
+check_m4_worker      || { kill_local "palimpsest.worker.*m4"; start_m4_worker; }
+check_gemini_workers || { kill_local "gemini_features_worker"; sleep 1; start_gemini_workers; }
 
-    # M4 local
-    check_m4_worker      || { kill_local "palimpsest.worker.*m4"; start_m4_worker; }
-    check_gemini_workers || { kill_local "gemini_features_worker"; sleep 1; start_gemini_workers; }
+# gonktop
+check_gonktop_broker || { kill_remote "$GONKTOP" "uvicorn.*broker"; sleep 1; start_gonktop_broker; }
+check_gonktop_worker || { kill_remote "$GONKTOP" "palimpsest.worker.*gonktop"; sleep 1; start_gonktop_worker; }
 
-    # gonktop
-    check_gonktop_broker || { kill_remote "$GONKTOP" "uvicorn.*broker"; sleep 1; start_gonktop_broker; }
-    check_gonktop_worker || { kill_remote "$GONKTOP" "palimpsest.worker.*gonktop"; sleep 1; start_gonktop_worker; }
+# M5
+check_m5_worker || { kill_remote "$M5" "palimpsest.worker.*m5"; sleep 1; start_m5_worker; }
 
-    # M5
-    check_m5_worker || { kill_remote "$M5" "palimpsest.worker.*m5"; sleep 1; start_m5_worker; }
-
-    sleep "$CHECK_INTERVAL"
-done
+log "=== check complete ==="

@@ -23,11 +23,12 @@ dependencies = [
 ]
 
 [project.scripts]
-palimpsest-index     = "palimpsest.indexer:main"
+palimpsest = "palimpsest.indexer:main"
 palimpsest-review    = "palimpsest.review:main"
 palimpsest-preflight = "palimpsest.preflight:main"
-palimpsest-orchestrate = "palimpsest.orchestrator:main"
+palimpsest-orchestrator = "palimpsest.orchestrator:main"
 palimpsest-eval = "palimpsest.eval.cli:main"
+palimpsest-triage = "palimpsest.triage:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

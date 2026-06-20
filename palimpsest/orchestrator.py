@@ -176,6 +176,48 @@ def heartbeat_cycle(config: Config) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
+def enqueue_brief(config: Config, status_filter: str = "indexed") -> int:
+    """Insert pending brief jobs for all docs at or past the given status.
+
+    Idempotent: docs that already have a brief job (any state) are skipped
+    via the UNIQUE(type, doc_id) constraint.
+
+    Args:
+        config: Loaded configuration.
+        status_filter: Only enqueue briefs for docs whose status matches this
+            value.  Defaults to 'indexed' (past OCR and features).
+
+    Returns:
+        Number of new jobs enqueued.
+    """
+    conn = connect(config)
+    conn.row_factory = sqlite3.Row
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    rows = conn.execute(
+        "SELECT doc_id FROM documents WHERE status = ?",
+        (status_filter,),
+    ).fetchall()
+
+    enqueued = 0
+    with conn:
+        for row in rows:
+            doc_id = row["doc_id"]
+            try:
+                conn.execute(
+                    "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) "
+                    "VALUES ('brief', ?, '{}', 'pending', 5, ?, ?)",
+                    (doc_id, now, now),
+                )
+                enqueued += 1
+            except sqlite3.IntegrityError:
+                pass  # job already exists for this doc
+
+    conn.close()
+    logger.info("enqueue-brief: enqueued %d job(s) for status='%s'.", enqueued, status_filter)
+    return enqueued
+
+
 def investigate(accession: str, config: Config) -> Path:
     """Run all scorers against docs with the given accession prefix.
 
@@ -313,6 +355,17 @@ def main() -> None:
         help="Accession prefix to investigate (e.g. 'NV0014689')",
     )
 
+    eb_parser = sub.add_parser(
+        "enqueue-brief",
+        help="Enqueue pending brief jobs for all docs at a given pipeline status.",
+    )
+    eb_parser.add_argument(
+        "--status",
+        default="indexed",
+        metavar="STATUS",
+        help="Document status to filter on (default: indexed).",
+    )
+
     args = parser.parse_args()
     config = load(args.config)
 
@@ -326,6 +379,10 @@ def main() -> None:
     elif args.command == "investigate":
         out = investigate(args.accession, config)
         print(f"Findings written to: {out}")
+
+    elif args.command == "enqueue-brief":
+        count = enqueue_brief(config, status_filter=args.status)
+        print(f"Enqueued {count} brief job(s) for status='{args.status}'.")
 
 
 if __name__ == "__main__":
