@@ -403,10 +403,10 @@ def status():
     cur = conn.execute("SELECT lease_owner, MAX(updated_at) as last_seen FROM jobs WHERE state='leased' GROUP BY lease_owner")
     workers = {row["lease_owner"]: row["last_seen"] for row in cur.fetchall()}
 
-    # 10 most recent dead jobs with errors
-    cur = conn.execute("SELECT type, doc_id, error, updated_at FROM jobs WHERE state='dead' ORDER BY updated_at DESC LIMIT 10")
+    # 5 most recent dead jobs with errors
+    cur = conn.execute("SELECT type, doc_id, lease_owner, error, updated_at FROM jobs WHERE state='dead' ORDER BY updated_at DESC LIMIT 5")
     dead_jobs = [
-        {"type": row["type"], "doc_id": row["doc_id"], "error": row["error"], "updated_at": row["updated_at"]}
+        {"type": row["type"], "doc_id": row["doc_id"], "worker": row["lease_owner"], "error": row["error"], "updated_at": row["updated_at"]}
         for row in cur.fetchall()
     ]
 
