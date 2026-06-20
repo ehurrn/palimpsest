@@ -18,6 +18,10 @@ GEMINI_WORKERS=0  # disabled — agy quota exhausted
 GEMINI_BATCH=15
 GEMINI_CONCURRENCY=4
 
+OLLAMA_WORKERS=1  # local qwen3:8b features worker on M4
+OLLAMA_CONCURRENCY=2
+OLLAMA_BATCH=5
+
 GONKTOP="herren@192.168.0.58"
 M5="herren@192.168.0.63"
 
@@ -79,6 +83,28 @@ start_m4_worker() {
     PYTHONUNBUFFERED=1 nohup "$UV" run python -u -m palimpsest.worker --node m4 \
         </dev/null >>/tmp/palimpsest-worker-m4.log 2>&1 &
     log "    PID $!"
+}
+
+start_ollama_worker() {
+    log "  → starting Ollama features worker (qwen3:8b)"
+    source "$HOME/.zprofile" 2>/dev/null || true
+    # Ensure Ollama is running
+    pgrep -f "ollama serve" >/dev/null 2>&1 || { nohup ollama serve </dev/null >>/tmp/ollama.log 2>&1 & sleep 2; }
+    PYTHONUNBUFFERED=1 nohup "$UV" run python -u \
+        "$REPO/scripts/ollama_features_worker.py" \
+        --concurrency "$OLLAMA_CONCURRENCY" --batch-size "$OLLAMA_BATCH" --loop \
+        </dev/null >>/tmp/ollama-features.log 2>&1 &
+    log "    Ollama worker PID $!"
+}
+
+check_ollama_worker() {
+    [ "$OLLAMA_WORKERS" -eq 0 ] && { log "Ollama worker: disabled"; return 0; }
+    local pids age
+    pids=$(pgrep -f "ollama_features_worker" 2>/dev/null || true)
+    age=$(local_age /tmp/ollama-features.log)
+    if [ -z "$pids" ]; then log "Ollama worker: DEAD"; return 1; fi
+    if [ "$age" -gt "$STALE_SECS" ]; then log "Ollama worker: STALE (${age}s silent)"; return 1; fi
+    log "Ollama worker: ok (log ${age}s ago)"
 }
 
 start_gemini_workers() {
@@ -226,6 +252,7 @@ log "    Watching: M4 (local) · gonktop (192.168.0.58) · M5 (192.168.0.63)"
 # M4 local
 check_m4_worker      || { kill_local "palimpsest.worker.*m4"; start_m4_worker; }
 check_gemini_workers || { kill_local "gemini_features_worker"; sleep 1; start_gemini_workers; }
+check_ollama_worker  || { kill_local "ollama_features_worker"; sleep 1; start_ollama_worker; }
 
 # gonktop
 check_gonktop_broker || { kill_remote "$GONKTOP" "uvicorn.*broker"; sleep 1; start_gonktop_broker; }
