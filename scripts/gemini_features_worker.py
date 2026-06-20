@@ -13,7 +13,6 @@ Usage:
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
@@ -26,7 +25,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from palimpsest.config import load as load_config  # noqa: E402
 
-GEMINI_BIN = "/opt/homebrew/bin/gemini"
+AGY_BIN = "/Users/herren/.local/bin/agy"
 MODEL = "gemini-3.1-flash-lite"
 WORKER_ID = "gemini-features"
 
@@ -104,33 +103,15 @@ _DOC_END = "=== END DOCUMENT ==="
 # ---------------------------------------------------------------------------
 
 
-def get_gemini_env() -> dict[str, str]:
-    env = os.environ.copy()
-    if not env.get("GEMINI_API_KEY"):
-        zprofile = Path.home() / ".zprofile"
-        if zprofile.exists():
-            r = subprocess.run(
-                f"source {zprofile} && printf '%s' \"$GEMINI_API_KEY\"",
-                shell=True,
-                capture_output=True,
-                text=True,
-                executable="/bin/zsh",
-            )
-            if r.stdout.strip():
-                env["GEMINI_API_KEY"] = r.stdout.strip()
-    return env
-
-
-def call_gemini(prompt: str, env: dict[str, str]) -> str:
+def call_gemini(prompt: str) -> str:
     r = subprocess.run(
-        [GEMINI_BIN, "-p", prompt, "-m", MODEL],
+        [AGY_BIN, "-p", prompt, "--model", MODEL],
         capture_output=True,
         text=True,
-        env=env,
         timeout=300,
     )
     if r.returncode != 0:
-        raise RuntimeError(f"gemini exit {r.returncode}: {r.stderr[:400]}")
+        raise RuntimeError(f"agy exit {r.returncode}: {r.stderr[:400]}")
     return r.stdout.strip()
 
 
@@ -217,7 +198,6 @@ def process_batch(
     http: httpx.Client,
     broker_url: str,
     jobs: list[dict],
-    env: dict[str, str],
     dry_run: bool,
     tag: str,
 ) -> tuple[int, int]:
@@ -261,7 +241,7 @@ def process_batch(
         prompt = build_batch_prompt(sub)
         print(f"{tag}Gemini call — {len(sub)} docs, {len(prompt):,} chars")
         try:
-            raw = call_gemini(prompt, env)
+            raw = call_gemini(prompt)
             data = extract_json(raw)
         except Exception as exc:
             print(f"{tag}Gemini error: {exc}")
@@ -331,7 +311,6 @@ def thread_loop(
     thread_id: int,
     broker_url: str,
     batch_size: int,
-    env: dict[str, str],
     dry_run: bool,
     loop: bool,
 ) -> int:
@@ -373,7 +352,7 @@ def thread_loop(
             time.sleep(10)
             continue
 
-        ok, _ = process_batch(http, broker_url, jobs, env, dry_run, tag)
+        ok, _ = process_batch(http, broker_url, jobs, dry_run, tag)
         total_ok += ok
 
     return total_ok  # unreachable in loop mode
@@ -398,11 +377,6 @@ def main() -> None:
 
     cfg = load_config()
     broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
-    env = get_gemini_env()
-
-    if not env.get("GEMINI_API_KEY"):
-        print("ERROR: GEMINI_API_KEY not found in environment or ~/.zprofile", file=sys.stderr)
-        sys.exit(1)
 
     print(
         f"Gemini features worker — broker {broker_url} | model {MODEL} | "
@@ -412,7 +386,7 @@ def main() -> None:
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         futures = {
             pool.submit(
-                thread_loop, i, broker_url, args.batch_size, env, args.dry_run, args.loop
+                thread_loop, i, broker_url, args.batch_size, args.dry_run, args.loop
             ): i
             for i in range(args.concurrency)
         }
