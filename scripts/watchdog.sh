@@ -122,14 +122,14 @@ start_gemini_workers() {
 start_gonktop_broker() {
     log "  → starting gonktop broker"
     ssh -o BatchMode=yes "$GONKTOP" \
-        'nohup bash -c "cd ~/dev/palimpsest && git pull -q origin main; ~/.local/bin/uv run uvicorn palimpsest.broker:app --host 0.0.0.0 --port 8077" </dev/null >>/tmp/palimpsest-broker.log 2>&1 &' \
+        'nohup bash -c "cd ~/dev/palimpsest && git stash -q 2>/dev/null; git pull -q origin main 2>/dev/null; git stash pop -q 2>/dev/null; ~/.local/bin/uv run uvicorn palimpsest.broker:app --host 0.0.0.0 --port 8077" </dev/null >>/tmp/palimpsest-broker.log 2>&1 &' \
         2>/dev/null && log "    launched" || log "    SSH failed"
 }
 
 start_gonktop_worker() {
     log "  → starting gonktop palimpsest worker"
     ssh -o BatchMode=yes "$GONKTOP" \
-        'nohup bash -c "cd ~/dev/palimpsest && ~/.local/bin/uv run python -m palimpsest.worker --node gonktop" </dev/null >>/tmp/palimpsest-worker.log 2>&1 &' \
+        'nohup bash -c "cd ~/dev/palimpsest && git stash -q 2>/dev/null; git pull -q origin main 2>/dev/null; git stash pop -q 2>/dev/null; ~/.local/bin/uv run python -m palimpsest.worker --node gonktop" </dev/null >>/tmp/palimpsest-worker.log 2>&1 &' \
         2>/dev/null && log "    launched" || log "    SSH failed"
 }
 
@@ -152,7 +152,7 @@ enqueue_briefs() {
 start_harvester_fetch() {
     log "  → starting harvester fetch on gonktop"
     ssh -o BatchMode=yes "$GONKTOP" \
-        'nohup bash -c "cd ~/dev/palimpsest && git pull -q origin main && ~/.local/bin/uv run python -m palimpsest.harvester fetch" </dev/null >>/tmp/palimpsest-harvest.log 2>&1 &' \
+        'nohup bash -c "cd ~/dev/palimpsest && ~/.local/bin/uv run python -m palimpsest.harvester fetch" </dev/null >>/tmp/palimpsest-harvest.log 2>&1 &' \
         2>/dev/null && log "    launched" || log "    SSH failed"
 }
 
