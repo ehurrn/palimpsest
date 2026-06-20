@@ -3,15 +3,16 @@ import argparse
 import datetime
 import json
 import logging
-import sqlite3
-from typing import Callable, List
-import faiss
-import numpy as np
-import httpx
-
 import math
+import sqlite3
 from collections import defaultdict
-from palimpsest.config import load, Config
+from typing import Callable, List
+
+import faiss
+import httpx
+import numpy as np
+
+from palimpsest.config import Config, load
 from palimpsest.db import connect
 
 logger = logging.getLogger(__name__)
@@ -215,11 +216,15 @@ def _fetch_chunks_by_page(
     return by_page
 
 
-def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = get_ollama_embedding):
-    """Run the redaction-gap join algorithm."""
-    conn = connect(cfg)
+def _load_shard_indexes(cfg: Config) -> tuple[list[tuple[str, faiss.Index]], dict[str, faiss.Index]] | None:
+    """Load all FAISS shard indexes from storage.
 
-    # Discover all shard indexes (decade shards first, then legacy flat)
+    Args:
+        cfg: Loaded configuration.
+
+    Returns:
+        Tuple of (shard_indexes list, shard_idx_map dict), or None if no indexes found.
+    """
     shard_indexes: list[tuple[str, faiss.Index]] = []
     shards_root = cfg.storage_root / "index" / "shards"
     if shards_root.exists():
@@ -231,42 +236,49 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
     if legacy_path.exists():
         shard_indexes.append(("legacy", faiss.read_index(str(legacy_path))))
     if not shard_indexes:
-        logger.error("No FAISS index found. Please run 'build' first.")
-        return
-
-    # Map shard name → index for O(1) lookup during scoring
+        return None
     shard_idx_map: dict[str, faiss.Index] = {name: idx for name, idx in shard_indexes}
-    
-    # Query redactions that have not yet been joined
-    cur = conn.execute("""
-        SELECT r.redaction_id, r.doc_id, r.page_no, r.kind, r.label, r.x0, r.y0, r.x1, r.y1, r.context_before, r.context_after
-        FROM redactions r
-        LEFT JOIN gapjoin_runs g ON r.redaction_id = g.redaction_id
-        WHERE g.redaction_id IS NULL
-    """)
-    redactions = cur.fetchall()
-    
-    if not redactions:
-        logger.info("No new redactions to join.")
-        return
-        
-    logger.info(f"Processing redaction-gap join for {len(redactions)} redactions...")
+    return shard_indexes, shard_idx_map
+
+
+def _process_redactions(
+    cfg: Config,
+    conn: sqlite3.Connection,
+    redactions: list,
+    shard_indexes: list[tuple[str, faiss.Index]],
+    shard_idx_map: dict[str, faiss.Index],
+    embed_fn: Callable[[Config, str], List[float]],
+) -> int:
+    """Process a list of redaction rows through the gap-join algorithm.
+
+    Args:
+        cfg: Loaded configuration.
+        conn: Active DB connection (caller owns it).
+        redactions: List of redaction rows from the DB.
+        shard_indexes: Ordered list of (name, index) pairs for FAISS search.
+        shard_idx_map: Name-keyed map of indexes for chunk reconstruction.
+        embed_fn: Embedding function to call for context vectors.
+
+    Returns:
+        Number of redactions processed.
+    """
+    conn.row_factory = sqlite3.Row
     now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    
+
     w_cosine = cfg.gapjoin.get("w_cosine", 0.5)
     w_anchor = cfg.gapjoin.get("w_anchor", 0.3)
     w_kind = cfg.gapjoin.get("w_kind", 0.2)
     score_threshold = cfg.gapjoin.get("score_threshold", 0.65)
     topk = cfg.gapjoin.get("topk_embedding_candidates", 50)
-    
+
     for r in redactions:
         redaction_id = r["redaction_id"]
-        
+
         # 1. Context
         ctx_before = r["context_before"] or ""
         ctx_after = r["context_after"] or ""
         ctx = (ctx_before + " " + ctx_after).strip()
-        
+
         if len(ctx) < 40:
             # Skip: un-contextualized boxes are noise
             with conn:
@@ -275,7 +287,7 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                     (redaction_id, now_str)
                 )
             continue
-            
+
         # 2. Anchors (entities in same ±2-line band)
         # Fetch all entities on the same page
         cur = conn.execute(
@@ -283,7 +295,7 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
             (r["doc_id"], r["page_no"])
         )
         page_entities = cur.fetchall()
-        
+
         # Estimate median line height on the page
         heights = []
         for ent in page_entities:
@@ -291,17 +303,17 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                 heights.append(ent["y1"] - ent["y0"])
         if r["y1"] is not None and r["y0"] is not None:
             heights.append(r["y1"] - r["y0"])
-            
+
         median_h = np.median(heights) if heights else 0.02
         if np.isnan(median_h) or median_h <= 0:
             median_h = 0.02
-            
+
         ry_center = (r["y0"] + r["y1"]) / 2 if (r["y0"] is not None and r["y1"] is not None) else None
-        
+
         A = set()
         ctx_before_lower = ctx_before.lower()
         ctx_after_lower = ctx_after.lower()
-        
+
         for ent in page_entities:
             # Check coordinate proximity (within 2.5 line heights)
             is_near = False
@@ -309,22 +321,22 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                 ey_center = (ent["y0"] + ent["y1"]) / 2
                 if abs(ey_center - ry_center) <= 2.5 * median_h:
                     is_near = True
-                    
+
             # Check substring presence
             is_in_ctx = False
             ent_text_lower = ent["text"].lower()
             if ent_text_lower in ctx_before_lower or ent_text_lower in ctx_after_lower:
                 is_in_ctx = True
-                
+
             if is_near or is_in_ctx:
                 A.add(ent["norm"])
-                
+
         # 3. Slot kind guess
         expectation = get_slot_expectation(r["kind"], r["label"])
-        
+
         # Candidates dict to deduplicate: entity_id -> {entity, method, score_cosine, score_anchor}
         candidates: dict[int, dict] = {}
-        
+
         # 4a. Anchor Route
         if len(A) >= 2:
             placeholders = ",".join("?" for _ in A)
@@ -348,14 +360,14 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                     "score_cosine": None, # Will compute later
                     "hit_chunk_ids": []
                 }
-                
+
         # 4b. Embedding Route
         try:
             ctx_emb = embed_fn(cfg, ctx)
         except Exception as e:
             logger.warning(f"Skipping embedding route for redaction {redaction_id} due to embedding failure: {e}")
             ctx_emb = None
-            
+
         if ctx_emb is not None:
             # Multi-shard FAISS search with global top-K merge
             query_vec = np.array([ctx_emb], dtype=np.float32)
@@ -371,33 +383,33 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
             _all_pairs.sort(key=lambda x: x[0], reverse=True)
             _all_pairs = _all_pairs[:topk]
             hit_chunk_ids = [i for _, i in _all_pairs]
-            
+
             if hit_chunk_ids:
                 placeholders = ",".join("?" for _ in hit_chunk_ids)
                 query = f"""
-                SELECT chunk_id, doc_id, page_no, char_start, char_end 
-                FROM chunks 
+                SELECT chunk_id, doc_id, page_no, char_start, char_end
+                FROM chunks
                 WHERE doc_id != ? AND chunk_id IN ({placeholders})
                 """
                 cur = conn.execute(query, [r["doc_id"]] + hit_chunk_ids)
                 hit_chunks = cur.fetchall()
-                
+
                 page_pairs = set((ch["doc_id"], ch["page_no"]) for ch in hit_chunks)
-                
+
                 if page_pairs:
                     pair_placeholders = " OR ".join("(doc_id = ? AND page_no = ?)" for _ in page_pairs)
                     params = []
                     for d, p in page_pairs:
                         params.extend([d, p])
-                        
+
                     cur = conn.execute(
-                        f"SELECT entity_id, doc_id, page_no, kind, text, norm, char_start, char_end, x0, y0, x1, y1 FROM entities WHERE {pair_placeholders}", 
+                        f"SELECT entity_id, doc_id, page_no, kind, text, norm, char_start, char_end, x0, y0, x1, y1 FROM entities WHERE {pair_placeholders}",
                         params
                     )
                     candidate_entities_on_pages = cur.fetchall()
-                    
+
                     chunk_cosines = {i: d for d, i in _all_pairs}
-                            
+
                     for ent in candidate_entities_on_pages:
                         for ch in hit_chunks:
                             if ent["doc_id"] == ch["doc_id"] and ent["page_no"] == ch["page_no"]:
@@ -406,7 +418,7 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                                         # Inside hit chunk!
                                         eid = ent["entity_id"]
                                         cosine = chunk_cosines[ch["chunk_id"]]
-                                        
+
                                         if eid in candidates:
                                             # Met by both routes!
                                             candidates[eid]["method"] = "both"
@@ -421,7 +433,7 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                                                 "hit_chunk_ids": [ch["chunk_id"]]
                                             }
 
-                                        
+
         # 5. Score Candidates
         # Pre-fetch entities + chunks for every page we'll score against (all
         # candidate pages plus the redaction's own page) in two bulk queries,
@@ -437,7 +449,7 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
         scored_candidates: list[dict] = []
         for eid, cand in list(candidates.items()):
             e = cand["entity"]
-            
+
             # score_cosine: if not computed (anchor-only candidate), try to find its chunk and get cosine
             sc_cosine = cand["score_cosine"]
             if sc_cosine is None:
@@ -485,7 +497,7 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                         sc_cosine = 0.0
                 else:
                     sc_cosine = 0.0
-            
+
             # score_anchor
             anchors_on_e_page = {
                 ent["norm"]
@@ -494,16 +506,16 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
             intersection = A.intersection(anchors_on_e_page)
             sc_anchor = len(intersection) / max(len(A), 1.0)
             sc_anchor = min(sc_anchor, 1.0)
-            
+
             # score_kind
             if expectation is not None:
                 sc_kind = 1.0 if e["kind"] == expectation else 0.0
             else:
                 sc_kind = 0.5
-                
+
             # Total score
             tot_score = w_cosine * sc_cosine + w_anchor * sc_anchor + w_kind * sc_kind
-            
+
             if e["kind"] == "dosage":
                 # subject_ref/person entities on the candidate's page (in memory)
                 subj_person_cand = [
@@ -555,7 +567,7 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                     tot_score += 0.15
 
                 tot_score = min(tot_score, 1.0)
-                
+
             scored_candidates.append({
                 "eid": eid,
                 "cand": cand,
@@ -564,24 +576,24 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                 "sc_anchor": sc_anchor,
                 "sc_kind": sc_kind
             })
-            
+
         # Group and deduplicate
         final_candidates = []
         dosage_groups = defaultdict(list)
         non_dosage_candidates = []
-        
+
         for sc in scored_candidates:
             if sc["cand"]["entity"]["kind"] == "dosage":
                 dosage_groups[sc["cand"]["entity"]["norm"]].append(sc)
             else:
                 non_dosage_candidates.append(sc)
-                
+
         for norm, group in dosage_groups.items():
             best_sc = max(group, key=lambda x: x["tot_score"])
             final_candidates.append(best_sc)
-            
+
         final_candidates.extend(non_dosage_candidates)
-        
+
         # Now persist final candidates
         for sc in final_candidates:
             tot_score = sc["tot_score"]
@@ -591,14 +603,14 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                 e = cand["entity"]
                 with conn:
                     cur = conn.execute("""
-                        INSERT OR REPLACE INTO gap_candidates 
+                        INSERT OR REPLACE INTO gap_candidates
                         (redaction_id, clear_entity_id, score, score_cosine, score_anchor, score_kind, method, status)
                         VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate')
                         RETURNING gap_id
                     """, (redaction_id, eid, tot_score, sc["sc_cosine"], sc["sc_anchor"], sc["sc_kind"], cand["method"]))
                     gap_row = cur.fetchone()
                     gap_id = gap_row["gap_id"] if gap_row else None
-                    
+
                     if e["kind"] == "person" and gap_id is not None:
                         chk = conn.execute("SELECT 1 FROM review_queue WHERE entity_id = ?", (eid,))
                         if not chk.fetchone():
@@ -607,14 +619,96 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
                                 VALUES (?, ?, 'pending')
                             """, (eid, f"person in gap candidate #{gap_id}"))
 
-                        
+
         # Mark redaction as joined
         with conn:
             conn.execute(
                 "INSERT OR REPLACE INTO gapjoin_runs (redaction_id, run_at) VALUES (?, ?)",
                 (redaction_id, now_str)
             )
-            
+
+    return len(redactions)
+
+
+def run_gapjoin_for_doc(
+    cfg: Config,
+    conn: sqlite3.Connection,
+    doc_id: str,
+    embed_fn: Callable[[Config, str], List[float]] = get_ollama_embedding,
+) -> int:
+    """Run gap join for all pending redactions in a single document.
+
+    Args:
+        cfg: Loaded configuration.
+        conn: Active DB connection (caller owns it).
+        doc_id: Document to process.
+        embed_fn: Embedding function for context vectors.
+
+    Returns:
+        Number of redactions processed.
+    """
+    conn.row_factory = sqlite3.Row
+    loaded = _load_shard_indexes(cfg)
+    if loaded is None:
+        logger.error("No FAISS index found. Please run 'build' first.")
+        return 0
+    shard_indexes, shard_idx_map = loaded
+
+    cur = conn.execute(
+        """
+        SELECT r.redaction_id, r.doc_id, r.page_no, r.kind, r.label,
+               r.x0, r.y0, r.x1, r.y1, r.context_before, r.context_after
+        FROM redactions r
+        LEFT JOIN gapjoin_runs g ON r.redaction_id = g.redaction_id
+        WHERE g.redaction_id IS NULL AND r.doc_id = ?
+        """,
+        (doc_id,),
+    )
+    redactions = cur.fetchall()
+
+    if not redactions:
+        logger.info("gap_join: no pending redactions for doc %s.", doc_id)
+        return 0
+
+    logger.info(
+        "gap_join: processing %d redaction(s) for doc %s.", len(redactions), doc_id
+    )
+    return _process_redactions(cfg, conn, redactions, shard_indexes, shard_idx_map, embed_fn)
+
+
+def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = get_ollama_embedding):
+    """Run the redaction-gap join algorithm across all documents.
+
+    Args:
+        cfg: Loaded configuration.
+        embed_fn: Embedding function for context vectors.
+    """
+    conn = connect(cfg)
+    conn.row_factory = sqlite3.Row
+
+    loaded = _load_shard_indexes(cfg)
+    if loaded is None:
+        logger.error("No FAISS index found. Please run 'build' first.")
+        conn.close()
+        return
+    shard_indexes, shard_idx_map = loaded
+
+    cur = conn.execute("""
+        SELECT r.redaction_id, r.doc_id, r.page_no, r.kind, r.label, r.x0, r.y0, r.x1, r.y1, r.context_before, r.context_after
+        FROM redactions r
+        LEFT JOIN gapjoin_runs g ON r.redaction_id = g.redaction_id
+        WHERE g.redaction_id IS NULL
+    """)
+    redactions = cur.fetchall()
+
+    if not redactions:
+        logger.info("No new redactions to join.")
+        conn.close()
+        return
+
+    logger.info(f"Processing redaction-gap join for {len(redactions)} redactions...")
+    _process_redactions(cfg, conn, redactions, shard_indexes, shard_idx_map, embed_fn)
+    conn.close()
     logger.info("Redaction-gap join run completed.")
 
 

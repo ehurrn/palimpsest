@@ -1,6 +1,8 @@
 # palimpsest/tasks/__init__.py
 from typing import Callable, Dict
+
 from palimpsest.config import Config
+
 
 class PermanentJobError(Exception):
     """An error indicating that the job has failed permanently and should not be retried."""
@@ -31,4 +33,7 @@ try:
 except ImportError:
     pass
 
-
+try:
+    import palimpsest.tasks.gapjoin  # noqa: F401
+except ImportError:
+    pass

@@ -59,6 +59,40 @@ def _candidate_count(conn: sqlite3.Connection, scorer) -> int:
         return 0
 
 
+def _enqueue_pending_gap_joins(conn: sqlite3.Connection, now: str) -> int:
+    """Enqueue gap_join jobs for docs with unprocessed redactions.
+
+    Args:
+        conn: Active DB connection.
+        now: ISO-format timestamp string for created_at/updated_at.
+
+    Returns:
+        Number of jobs newly enqueued.
+    """
+    rows = conn.execute("""
+        SELECT DISTINCT r.doc_id
+        FROM redactions r
+        LEFT JOIN gapjoin_runs g ON r.redaction_id = g.redaction_id
+        WHERE g.redaction_id IS NULL
+    """).fetchall()
+
+    enqueued = 0
+    for row in rows:
+        doc_id = row["doc_id"]
+        try:
+            conn.execute(
+                "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) "
+                "VALUES ('gap_join', ?, '{}', 'pending', 5, ?, ?)",
+                (doc_id, now, now),
+            )
+            enqueued += 1
+        except sqlite3.IntegrityError:
+            pass
+    if enqueued:
+        conn.commit()
+    return enqueued
+
+
 def _worker_alive(config: Config) -> bool:
     """Return True if the broker /status endpoint responds with HTTP 200."""
     broker_url = config.broker.get("url", "")
@@ -89,6 +123,7 @@ def heartbeat_cycle(config: Config) -> dict[str, int]:
     low_water = int(config.orchestrator.get("low_water_mark", 10))
     conn = connect(config)
     conn.row_factory = sqlite3.Row
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     results: dict[str, int] = {}
 
@@ -120,6 +155,10 @@ def heartbeat_cycle(config: Config) -> dict[str, int]:
             type_key, delta, after,
         )
         results[type_key] = delta
+
+    enqueued = _enqueue_pending_gap_joins(conn, now)
+    if enqueued:
+        logger.info("Heartbeat: enqueued %d gap_join job(s).", enqueued)
 
     if not _worker_alive(config):
         logger.warning(
