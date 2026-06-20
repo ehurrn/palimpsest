@@ -1,9 +1,31 @@
 # tests/test_identity.py
-"""Tests for Type-c anonymous identity linkage (run_identity_link)."""
+"""Tests for Type-c anonymous identity linkage (TypeCScorer)."""
 import sqlite3
+
 import pytest
+
 from palimpsest.db import migrate
-from palimpsest.indexer import run_identity_link, _edit_distance
+from palimpsest.indexer import _edit_distance
+from palimpsest.scorers.type_c import TypeCScorer
+
+# ---------------------------------------------------------------------------
+# Mock embed function — deterministic, injectable
+# ---------------------------------------------------------------------------
+
+def _mock_embed(texts: list[str]) -> list[list[float]]:
+    """Unit vector based on first character of each string.
+
+    Strings starting with the same character get cosine=1.0.
+    Strings starting with different characters get cosine=0.0.
+    """
+    dim = 8
+    vecs = []
+    for t in texts:
+        v = [0.0] * dim
+        idx = ord(t[0]) % dim if t else 0
+        v[idx] = 1.0
+        vecs.append(v)
+    return vecs
 
 
 # ---------------------------------------------------------------------------
@@ -46,13 +68,11 @@ def test_edit_distance_far_apart():
 
 
 # ---------------------------------------------------------------------------
-# Unit: org_match score
+# Unit: basic linkage — same decade
 # ---------------------------------------------------------------------------
 
-def test_org_match_score(tmp_path):
-    """Edit-distance ≤ 2 between any org pair should score 1.0, contributing 0.5 to total.
-    Combined with exact year match (date_proximity=1.0, contributing 0.3), score = 0.8 >= 0.65.
-    """
+def test_basic_linkage_same_decade(tmp_path):
+    """Subject and person in same decade (1950s): cosine=1.0 > 0.65 → one row inserted."""
     cfg, conn = _setup_db(tmp_path)
 
     with conn:
@@ -61,140 +81,76 @@ def test_org_match_score(tmp_path):
         conn.execute("INSERT INTO pages (doc_id, page_no, text) VALUES ('doc_subj', 1, 'test')")
         conn.execute("INSERT INTO pages (doc_id, page_no, text) VALUES ('doc_named', 1, 'test')")
 
-        # Subject page: subject_ref + org + date 1955
+        # Subject page: subject_ref + org (qualifies the EXISTS filter)
         conn.execute("""INSERT INTO entities
             (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (1, 'doc_subj', 1, 'subject_ref', 'Subject 3', 'subject 3')""")
         conn.execute("""INSERT INTO entities
             (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (2, 'doc_subj', 1, 'org', 'Los Alamos National Lab', 'los alamos national lab')""")
-        conn.execute("""INSERT INTO entities
-            (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (5, 'doc_subj', 1, 'date', '1955', '1955')""")
 
-        # Named page: person + org with one-letter typo (edit distance = 1)
+        # Named page: person
         conn.execute("""INSERT INTO entities
             (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (3, 'doc_named', 1, 'person', 'John Smith', 'john smith')""")
-        conn.execute("""INSERT INTO entities
-            (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (4, 'doc_named', 1, 'org', 'Los Almos National Lab', 'los almos national lab')""")
 
-    run_identity_link(cfg)
+    TypeCScorer(embed_fn=_mock_embed).run(conn, cfg)
 
     rows = conn.execute("SELECT * FROM identity_link_candidates").fetchall()
     assert len(rows) == 1
     row = rows[0]
-    assert pytest.approx(row["org_match"], abs=1e-6) == 1.0
-    # score = 1.0*0.5 + 1.0*0.3 + 0.0 = 0.8
-    assert pytest.approx(row["score"], abs=1e-6) == 0.8
+    # Both profile strings start with 'E' (Entity type: ...) → cosine = 1.0
+    assert pytest.approx(row["score"], abs=1e-6) == 1.0
     assert row["score"] >= 0.65
 
 
 # ---------------------------------------------------------------------------
-# Unit: date_proximity score
+# Unit: decade filter excludes distant persons
 # ---------------------------------------------------------------------------
 
-def test_date_proximity_score(tmp_path):
-    """Year gap of 0 → proximity 1.0; gap of 3 → proximity 0.0."""
+def test_decade_filter_excludes_distant(tmp_path):
+    """Person A is same decade (1950s) → compared and inserted.
+    Person B is decade 1980 → not in [1940,1950,1960] → NOT compared → not inserted.
+    """
     cfg, conn = _setup_db(tmp_path)
 
     with conn:
         conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_subj', 1955)")
         conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_named_exact', 1955)")
-        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_named_far', 1960)")
+        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_named_far', 1985)")
         for doc in ("doc_subj", "doc_named_exact", "doc_named_far"):
             conn.execute(f"INSERT INTO pages (doc_id, page_no, text) VALUES ('{doc}', 1, 'test')")
 
-        # Subject page: subject_ref + org + date 1955
+        # Subject page: subject_ref + org (decade 1950)
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (1, 'doc_subj', 1, 'subject_ref', 'Subject A', 'subject a')""")
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (2, 'doc_subj', 1, 'org', 'Nevada Test Site', 'nevada test site')""")
-        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (3, 'doc_subj', 1, 'date', '1955', '1955')""")
 
-        # Named page exact year
+        # Named page exact year (decade 1950 → in window)
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (4, 'doc_named_exact', 1, 'person', 'Jane Doe', 'jane doe')""")
-        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (5, 'doc_named_exact', 1, 'org', 'Nevada Test Site', 'nevada test site')""")
 
-        # Named page far year (gap 5 → proximity=0)
+        # Named page far year (decade 1980 → outside ±1 of 1950)
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (6, 'doc_named_far', 1, 'person', 'Bob Brown', 'bob brown')""")
-        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (7, 'doc_named_far', 1, 'org', 'Nevada Test Site', 'nevada test site')""")
 
-    run_identity_link(cfg)
+    TypeCScorer(embed_fn=_mock_embed).run(conn, cfg)
 
     rows = conn.execute(
         "SELECT * FROM identity_link_candidates ORDER BY score DESC"
     ).fetchall()
 
-    # doc_named_exact should score higher (date proximity=1.0) than doc_named_far (proximity=0)
-    assert len(rows) >= 1
-    exact = next((r for r in rows if r["named_doc_id"] == "doc_named_exact"), None)
-    assert exact is not None
-    assert pytest.approx(exact["date_proximity"], abs=1e-6) == 1.0
-
-    # doc_named_far: gap = 5, date_proximity = max(0, 1-5/3) = 0 → only org contributes
-    # score = 1.0*0.5 + 0.0*0.3 = 0.5 < threshold 0.65, so NOT inserted
-    far = next((r for r in rows if r["named_doc_id"] == "doc_named_far"), None)
-    assert far is None
-
-
-# ---------------------------------------------------------------------------
-# Unit: dosage_bonus
-# ---------------------------------------------------------------------------
-
-def test_dosage_bonus(tmp_path):
-    """Shared normalized dosage between subject and named page adds 0.2 bonus.
-
-    Formula: score = org_match*0.5 + date_proximity*0.3 + dosage_bonus
-    Here: no org, date_proximity=1.0 (exact year match), dosage_bonus=0.2
-    score = 0.0 + 0.3 + 0.2 = 0.5 — below default threshold 0.65.
-    Use lower threshold to confirm the bonus value itself is computed correctly.
-    """
-    cfg, conn = _setup_db(tmp_path)
-    cfg.gapjoin = {"score_threshold": 0.40}  # lower to isolate dosage_bonus check
-
-    with conn:
-        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_subj', 1958)")
-        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_named', 1958)")
-        for doc in ("doc_subj", "doc_named"):
-            conn.execute(f"INSERT INTO pages (doc_id, page_no, text) VALUES ('{doc}', 1, 'test')")
-
-        # Subject page: subject_ref + date + dosage
-        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (1, 'doc_subj', 1, 'subject_ref', 'Subject 7', 'subject 7')""")
-        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (2, 'doc_subj', 1, 'date', '1958', '1958')""")
-        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (3, 'doc_subj', 1, 'dosage', '50 rem', '50 rem')""")
-
-        # Named page: person + same dosage (doc year = 1958 → date_proximity = 1.0)
-        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (4, 'doc_named', 1, 'person', 'Alice Grey', 'alice grey')""")
-        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (5, 'doc_named', 1, 'dosage', '50 rem', '50 rem')""")
-
-    run_identity_link(cfg)
-
-    rows = conn.execute("SELECT * FROM identity_link_candidates").fetchall()
     assert len(rows) == 1
-    row = rows[0]
-    assert pytest.approx(row["dosage_bonus"], abs=1e-6) == 0.2
-    # score = 0.0*0.5 + 1.0*0.3 + 0.2 = 0.5
-    assert pytest.approx(row["score"], abs=1e-6) == 0.5
+    assert rows[0]["named_doc_id"] == "doc_named_exact"
 
 
-def test_dosage_bonus_applied(tmp_path):
-    """dosage_bonus combined with date_proximity pushes score above a lower threshold.
+# ---------------------------------------------------------------------------
+# Unit: threshold gating
+# ---------------------------------------------------------------------------
 
-    Formula: score = 0.0*0.5 + 1.0*0.3 + 0.2 = 0.5 > threshold=0.40
-    Confirms the bonus is incorporated into the final score.
-    """
+def test_threshold_gating(tmp_path):
+    """With threshold=0.40, cosine=1.0 (same decade, same first char) → inserted."""
     cfg, conn = _setup_db(tmp_path)
     cfg.gapjoin = {"score_threshold": 0.40}
 
@@ -205,52 +161,76 @@ def test_dosage_bonus_applied(tmp_path):
             conn.execute(f"INSERT INTO pages (doc_id, page_no, text) VALUES ('{doc}', 1, 'test')")
 
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
+            VALUES (1, 'doc_subj', 1, 'subject_ref', 'Subject 7', 'subject 7')""")
+        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
+            VALUES (2, 'doc_subj', 1, 'dosage', '50 rem', '50 rem')""")
+
+        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
+            VALUES (4, 'doc_named', 1, 'person', 'Alice Grey', 'alice grey')""")
+
+    TypeCScorer(embed_fn=_mock_embed).run(conn, cfg)
+
+    rows = conn.execute("SELECT * FROM identity_link_candidates").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["score"] > 0.4
+
+
+# ---------------------------------------------------------------------------
+# Unit: threshold higher than cosine — nothing inserted
+# ---------------------------------------------------------------------------
+
+def test_threshold_higher_than_cosine(tmp_path):
+    """With threshold=2.0 (impossible), no row should be inserted regardless of cosine."""
+    cfg, conn = _setup_db(tmp_path)
+    cfg.gapjoin = {"score_threshold": 2.0}
+
+    with conn:
+        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_subj', 1958)")
+        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_named', 1958)")
+        for doc in ("doc_subj", "doc_named"):
+            conn.execute(f"INSERT INTO pages (doc_id, page_no, text) VALUES ('{doc}', 1, 'test')")
+
+        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (1, 'doc_subj', 1, 'subject_ref', 'Patient B', 'patient b')""")
-        # date entity so date_proximity = 1.0 (matches doc_named year=1958)
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (2, 'doc_subj', 1, 'date', '1958', '1958')""")
-        conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
-            VALUES (3, 'doc_subj', 1, 'dosage', '50 rem', '50 rem')""")
+            VALUES (2, 'doc_subj', 1, 'dosage', '50 rem', '50 rem')""")
 
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (4, 'doc_named', 1, 'person', 'Tom Evans', 'tom evans')""")
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (5, 'doc_named', 1, 'dosage', '50 rem', '50 rem')""")
 
-    run_identity_link(cfg)
+    TypeCScorer(embed_fn=_mock_embed).run(conn, cfg)
 
     rows = conn.execute("SELECT * FROM identity_link_candidates").fetchall()
-    assert len(rows) == 1
-    assert pytest.approx(rows[0]["dosage_bonus"], abs=1e-6) == 0.2
-    # score = 0.0*0.5 + 1.0*0.3 + 0.2 = 0.5
-    assert pytest.approx(rows[0]["score"], abs=1e-6) == 0.5
+    assert len(rows) == 0
 
 
 # ---------------------------------------------------------------------------
-# Unit: score below threshold — not inserted
+# Unit: score below threshold — not inserted (decade-based exclusion)
 # ---------------------------------------------------------------------------
 
 def test_below_threshold_not_inserted(tmp_path):
-    """Pairs that score below threshold must not appear in identity_link_candidates."""
+    """Subject in decade 1950, person in decade 1980 (3 decades away, not in ±1).
+    Not compared at all → len(rows)==0.
+    """
     cfg, conn = _setup_db(tmp_path)
 
     with conn:
         conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_subj', 1955)")
-        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_named', 1975)")
+        conn.execute("INSERT INTO documents (doc_id, year) VALUES ('doc_named', 1985)")
         for doc in ("doc_subj", "doc_named"):
             conn.execute(f"INSERT INTO pages (doc_id, page_no, text) VALUES ('{doc}', 1, 'test')")
 
-        # Subject: subject_ref + date 1955
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (1, 'doc_subj', 1, 'subject_ref', 'Case 9', 'case 9')""")
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (2, 'doc_subj', 1, 'date', '1955', '1955')""")
 
-        # Named: different year (1975), no org overlap → low score
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (3, 'doc_named', 1, 'person', 'Carl White', 'carl white')""")
 
-    run_identity_link(cfg)
+    TypeCScorer(embed_fn=_mock_embed).run(conn, cfg)
 
     rows = conn.execute("SELECT * FROM identity_link_candidates").fetchall()
     assert len(rows) == 0
@@ -281,7 +261,7 @@ def test_identity_gate_locked_in_review(tmp_path, monkeypatch):
         conn.execute("""INSERT INTO entities (entity_id, doc_id, page_no, kind, text, norm)
             VALUES (4, 'doc_named', 1, 'org', 'Sandia', 'sandia')""")
 
-        # Insert a candidate directly
+        # Insert a candidate directly (org_match/date_proximity/dosage_bonus are nullable)
         conn.execute("""INSERT INTO identity_link_candidates
             (subject_doc_id, subject_page, subject_ref,
              named_doc_id, named_page, named_entity_id,
