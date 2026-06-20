@@ -241,6 +241,27 @@ def _load_shard_indexes(cfg: Config) -> tuple[list[tuple[str, faiss.Index]], dic
     return shard_indexes, shard_idx_map
 
 
+def _preferred_shard_order(
+    shard_indexes: list[tuple[str, faiss.Index]],
+    doc_year: int | None,
+) -> list[tuple[str, faiss.Index]]:
+    """Return shard list with the decade matching doc_year first.
+
+    Args:
+        shard_indexes: Ordered list of (name, index) pairs.
+        doc_year: Year of the document whose redaction is being processed.
+
+    Returns:
+        Reordered list with the preferred decade shard first.
+    """
+    if doc_year is None:
+        return shard_indexes
+    preferred_decade = str((doc_year // 10) * 10)
+    preferred = [(n, idx) for n, idx in shard_indexes if n == preferred_decade]
+    others = [(n, idx) for n, idx in shard_indexes if n != preferred_decade]
+    return preferred + others
+
+
 def _process_redactions(
     cfg: Config,
     conn: sqlite3.Connection,
@@ -374,8 +395,14 @@ def _process_redactions(
             norms = np.linalg.norm(query_vec, axis=1, keepdims=True)
             query_vec = np.where(norms > 0, query_vec / norms, query_vec)
 
+            doc_row = conn.execute(
+                "SELECT year FROM documents WHERE doc_id = ?", (r["doc_id"],)
+            ).fetchone()
+            doc_year = doc_row["year"] if doc_row else None
+            ordered_shards = _preferred_shard_order(shard_indexes, doc_year)
+
             _all_pairs: list[tuple[float, int]] = []
-            for _, shard_idx in shard_indexes:
+            for _, shard_idx in ordered_shards:
                 _D_s, _I_s = shard_idx.search(query_vec, topk)
                 for d, i in zip(_D_s[0], _I_s[0]):
                     if i != -1:
@@ -577,6 +604,18 @@ def _process_redactions(
                 "sc_kind": sc_kind
             })
 
+        # Apply char_capacity constraint if the redaction has one
+        try:
+            char_cap = r["char_capacity"]
+        except (IndexError, KeyError):
+            char_cap = None
+
+        if char_cap is not None:
+            scored_candidates = [
+                sc for sc in scored_candidates
+                if len(sc["cand"]["entity"]["text"]) <= char_cap
+            ]
+
         # Group and deduplicate
         final_candidates = []
         dosage_groups = defaultdict(list)
@@ -657,7 +696,8 @@ def run_gapjoin_for_doc(
     cur = conn.execute(
         """
         SELECT r.redaction_id, r.doc_id, r.page_no, r.kind, r.label,
-               r.x0, r.y0, r.x1, r.y1, r.context_before, r.context_after
+               r.x0, r.y0, r.x1, r.y1, r.context_before, r.context_after,
+               r.char_capacity
         FROM redactions r
         LEFT JOIN gapjoin_runs g ON r.redaction_id = g.redaction_id
         WHERE g.redaction_id IS NULL AND r.doc_id = ?
@@ -694,7 +734,9 @@ def run_gapjoin(cfg: Config, embed_fn: Callable[[Config, str], List[float]] = ge
     shard_indexes, shard_idx_map = loaded
 
     cur = conn.execute("""
-        SELECT r.redaction_id, r.doc_id, r.page_no, r.kind, r.label, r.x0, r.y0, r.x1, r.y1, r.context_before, r.context_after
+        SELECT r.redaction_id, r.doc_id, r.page_no, r.kind, r.label,
+               r.x0, r.y0, r.x1, r.y1, r.context_before, r.context_after,
+               r.char_capacity
         FROM redactions r
         LEFT JOIN gapjoin_runs g ON r.redaction_id = g.redaction_id
         WHERE g.redaction_id IS NULL
