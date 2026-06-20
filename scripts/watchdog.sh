@@ -14,7 +14,7 @@ UV="$(command -v uv)"
 CHECK_INTERVAL=90   # seconds between full-fleet checks
 STALE_SECS=300      # seconds of log silence → considered stuck
 
-GEMINI_WORKERS=1  # set 0 to disable
+GEMINI_WORKERS=0  # disabled — agy budget exhausted, re-enable when quota refreshes
 GEMINI_BATCH=15
 GEMINI_CONCURRENCY=4
 

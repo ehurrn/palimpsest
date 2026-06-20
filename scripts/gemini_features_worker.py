@@ -112,7 +112,10 @@ def call_gemini(prompt: str) -> str:
     )
     if r.returncode != 0:
         raise RuntimeError(f"agy exit {r.returncode}: {r.stderr[:400]}")
-    return r.stdout.strip()
+    out = r.stdout.strip()
+    if not out:
+        raise RuntimeError("agy returned empty — Gemini quota likely exhausted")
+    return out
 
 
 def extract_json(text: str) -> dict:
@@ -237,6 +240,7 @@ def process_batch(
     sub_batches = split_by_prompt_size(batch)
 
     results: dict[str, dict] = {}
+    failed_doc_ids: set[str] = set()
     for sub in sub_batches:
         prompt = build_batch_prompt(sub)
         print(f"{tag}Gemini call — {len(sub)} docs, {len(prompt):,} chars")
@@ -247,6 +251,7 @@ def process_batch(
             print(f"{tag}Gemini error: {exc}")
             for doc_id, _ in sub:
                 _fail_job(http, broker_url, job_map[doc_id])
+                failed_doc_ids.add(doc_id)
             continue
 
         for entry in data.get("documents", []):
@@ -256,6 +261,9 @@ def process_batch(
 
     ok = failed = 0
     for doc_id, _ in batch:
+        if doc_id in failed_doc_ids:
+            failed += 1
+            continue
         job = job_map[doc_id]
         result = results.get(doc_id, {"entities": [], "redactions": []})
         ents = len(result.get("entities", []))
