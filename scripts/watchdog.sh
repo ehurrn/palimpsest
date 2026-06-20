@@ -14,7 +14,7 @@ UV="$(command -v uv)"
 
 STALE_SECS=900      # seconds of log silence → considered stuck (1 check cycle = 15 min)
 
-GEMINI_WORKERS=1
+GEMINI_WORKERS=0  # quota exhausted — resets ~06:30
 GEMINI_BATCH=15
 GEMINI_CONCURRENCY=4
 
@@ -272,7 +272,8 @@ log "    Watching: M4 (local) · gonktop (192.168.0.58) · M5 (192.168.0.63)"
 check_m4_worker      || { kill_local "palimpsest.worker.*m4"; start_m4_worker; }
 check_gemini_workers || { kill_local "gemini_features_worker"; sleep 1; start_gemini_workers; }
 check_ollama_worker  || { kill_local "ollama_features_worker"; sleep 1; start_ollama_worker; }
-check_claude_brief_worker || { kill_local "claude_brief_worker"; sleep 1; start_claude_brief_worker; }
+# Claude brief worker disabled — agy quota exhausted, resets ~06:30
+# check_claude_brief_worker || { kill_local "claude_brief_worker"; sleep 1; start_claude_brief_worker; }
 
 # gonktop
 check_gonktop_broker || { kill_remote "$GONKTOP" "uvicorn.*broker"; sleep 1; start_gonktop_broker; }
