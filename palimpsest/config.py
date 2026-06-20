@@ -1,56 +1,63 @@
-# palimpsest/config.py
 import os
-import tomllib
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict
+
+if sys.version_info < (3, 12):
+    import tomli as tomllib
+else:
+    import tomllib
 
 class ConfigError(Exception):
     pass
 
 @dataclass(frozen=True)
 class Config:
-    raw: dict
+    raw: Dict[str, Any]
     storage_root: Path
     db_path: Path
-    broker: dict
-    mcp: dict
-    harvest: dict
-    ocr: dict
-    features: dict
-    embed: dict
-    gapjoin: dict
-    models: dict
-    nodes: dict
-    orchestrator: dict
-    eval: dict
+    broker: Dict[str, Any]
+    mcp: Dict[str, Any]
+    harvest: Dict[str, Any]
+    ocr: Dict[str, Any]
+    features: Dict[str, Any]
+    embed: Dict[str, Any]
+    gapjoin: Dict[str, Any]
+    models: Dict[str, Any]
+    nodes: Dict[str, Any]
 
 def load(path: str | Path | None = None) -> Config:
     if not path:
-        path = os.environ.get("PALIMPSEST_CONFIG", "config.toml")
-    p = Path(path)
-    if not p.exists():
-        raise ConfigError(f"Config file not found at {p}")
-    with open(p, "rb") as f:
+        path = os.environ.get("PALIMPSEST_CONFIG", Path(__file__).parent.parent / "config.toml")
+    
+    path = Path(path)
+    if not path.exists():
+        raise ConfigError(f"Config file not found: {path}")
+
+    with open(path, "rb") as f:
         data = tomllib.load(f)
-    
-    # Validation
-    required = ["storage", "db", "broker", "mcp", "harvest", "ocr", "features", "embed", "gapjoin", "models", "nodes"]
-    missing = [sec for sec in required if sec not in data]
+
+    # Validate top-level keys
+    required_sections = ["storage", "db", "broker", "mcp", "harvest", "ocr", "features", "embed", "gapjoin", "models", "nodes"]
+    missing = [s for s in required_sections if s not in data]
     if missing:
-        raise ConfigError(f"Missing sections: {', '.join(missing)}")
+        raise ConfigError(f"Missing config sections: {', '.join(missing)}")
+
+    # Expand variables
+    def expand_vars(value: Any, context: Dict[str, str]) -> Any:
+        if isinstance(value, str) and "{storage.root}" in value:
+            return value.replace("{storage.root}", context["storage.root"])
+        return value
+
+    context = {"storage.root": data["storage"]["root"]}
     
-    root_str = data["storage"]["root"]
-    db_path_str = data["db"]["path"].replace("{storage.root}", root_str)
-    
-    eval_cfg = dict(data.get("eval", {}))
-    for _k in ("artifact_path", "eval_db_path"):
-        if isinstance(eval_cfg.get(_k), str):
-            eval_cfg[_k] = eval_cfg[_k].replace("{storage.root}", root_str)
-            
+    db_path = Path(expand_vars(data["db"]["path"], context))
+
     return Config(
         raw=data,
-        storage_root=Path(root_str),
-        db_path=Path(db_path_str),
+        storage_root=Path(data["storage"]["root"]),
+        db_path=db_path,
         broker=data["broker"],
         mcp=data["mcp"],
         harvest=data["harvest"],
@@ -60,6 +67,4 @@ def load(path: str | Path | None = None) -> Config:
         gapjoin=data["gapjoin"],
         models=data["models"],
         nodes=data["nodes"],
-        orchestrator=data.get("orchestrator", {}),
-        eval=eval_cfg
     )

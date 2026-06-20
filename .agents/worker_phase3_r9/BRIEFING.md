@@ -27,8 +27,16 @@ Complete Phase 3 remaining tasks for Palimpsest: config, orchestrator implementa
 ## Task Summary
 - **What to build**: Configuration integration, orchestrator runner, plist template, and entry points. Unit & acceptance tests.
 - **Success criteria**: All tests pass, registration of scripts, entry point functionality.
-- **Interface contracts**: design/Part 4 plan, Part 3 plan.
+- **Interface contracts**: design/Part 3 plan, design/Part 4 plan.
 - **Code layout**: ~/dev/palimpsest/
+- **Tasks**:
+  1. Task 8: Thin `palimpsest/indexer.py` down to CLI shim.
+  2. Task 9: Add orchestrator section to `config.py` and `config.toml`.
+  3. Task 10: Add CLI entry points in `pyproject.toml` and run `pip install -e .`.
+  4. Task 11: Create `palimpsest/orchestrator.py`.
+  5. Task 12: Write `tests/test_config_orchestrator.py` and `tests/test_orchestrator.py`.
+  6. Task 13: Create `deploy/palimpsest.orchestrator.plist`.
+  7. Task 14: Run full regression checkpoint (A through F acceptance checks).
 
 ## Change Tracker
 - **Files modified**: None

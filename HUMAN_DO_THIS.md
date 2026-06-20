@@ -1,10 +1,16 @@
+## HUMAN_DO_THIS
+- None
 
-## Ollama embed (M4) — needed for REAL eval calibration  [added 2026-06-13]
-The Phase-4 eval trust-gate plan (specs/EVAL-TRUST-GATE.md, TASK-11..18) can be implemented
-and unit-tested NOW using the deterministic lexical embedding stub. BUT producing VALID
-precision numbers (and a real calibration.json) requires the production embedder
-`nomic-embed-text` via Ollama on a worker node. Ollama is currently broken on the M4
-(missing llama-server; see TODO.md).
-ACTION: restore Ollama + `ollama pull nomic-embed-text` on the M4 (or another node), then run
-`palimpsest-eval run --real-embed && palimpsest-eval calibrate`. Until then, gate thresholds
-from stub runs are PLUMBING-ONLY and must NOT be used to surface real findings.
+## 2026-06-19 05:32 — Features pipeline starved by OCR job_id ordering
+
+**Status:** Features jobs have job_ids 18604+ while OCR pending starts at 15526. 
+Broker leases by `priority ASC, job_id ASC` — OCR will be picked for the next ~12 hours
+(3030 OCR pending at ~4/min = ~750 min). Features won't run until OCR queue clears.
+
+**Fix options (pick one):**
+1. Add `/jobs/reprioritize` endpoint to broker → call `POST /jobs/reprioritize?type=features&priority=2`
+2. Or from gonktop: `~/.local/bin/uv run python3 -c "import sqlite3; c=sqlite3.connect('/home/herren/palimpsest-data/db/palimpsest.db'); c.execute(\"UPDATE jobs SET priority=2 WHERE state='pending' AND type='features'\"); c.commit(); print('done')"`
+3. Or dedicate gonktop to features by temporarily setting `nodes.gonktop = ["features","embed"]` in config.toml and restarting the gonktop worker
+
+**Also:** Job 2940 (doc 1605899) has att=4 (exceeds max_attempts=3) but is stuck leased.
+May need manual kill + revive.

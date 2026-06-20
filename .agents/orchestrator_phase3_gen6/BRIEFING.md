@@ -24,15 +24,18 @@ Coordinate the extraction of scorers for Types c, a, and b into palimpsest/score
    - Redesign: re-partition decomposition
    - Escalate: report to parent (last resort)
 4. **Succession**: Self-succeed at 16 spawns.
-- **Work items**:
+- Work items:
   1. Task 5: Extract TypeCScorer and write tests [done]
   2. Task 6: Extract TypeAScorer and write tests [done]
   3. Task 7: Create TypeBScorer and write tests [done]
   4. Task 8: Thin indexer.py down to CLI shim [done]
   5. Task 9: Add orchestrator section to config.py and config.toml [in-progress]
   6. Task 10: Add CLI entry points in pyproject.toml [pending]
-  7. Task 10B: Run full regression checkpoint [pending]
-  8. Final verification [pending]
+  7. Task 11: Create palimpsest/orchestrator.py [pending]
+  8. Task 12: Write orchestrator tests [pending]
+  9. Task 13: Create palimpsest.orchestrator.plist [pending]
+  10. Task 14: Run full regression checkpoint [pending]
+
 
 - **Current phase**: 1
 - **Current focus**: Task 9: Add orchestrator section to config.py and config.toml
