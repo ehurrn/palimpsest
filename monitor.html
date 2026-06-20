@@ -81,6 +81,10 @@
     <div class="card-title">Embed Queue</div>
     <div id="embed-body">Loading…</div>
   </div>
+  <div class="card" id="card-brief">
+    <div class="card-title">Brief Queue</div>
+    <div id="brief-body">Loading…</div>
+  </div>
   <div class="card" id="card-workers">
     <div class="card-title">Workers</div>
     <div id="workers-body">Loading…</div>
@@ -99,7 +103,7 @@
 const BROKER = 'http://192.168.0.58:8077';
 const REFRESH = 10; // seconds
 
-// Ring buffer for throughput — stores {ts, done: {ocr, features, embed}}
+// Ring buffer for throughput — stores {ts, done: {ocr, features, embed, brief}}
 const history = [];
 const MAX_HIST = 60; // keep 10 min at 10s intervals
 
@@ -245,6 +249,7 @@ async function refresh() {
       ocr:      (counts.ocr?.done || 0),
       features: (counts.features?.done || 0),
       embed:    (counts.embed?.done || 0),
+      brief:    (counts.brief?.done || 0),
     }
   });
   if (history.length > MAX_HIST) history.shift();
@@ -253,6 +258,7 @@ async function refresh() {
   document.getElementById('ocr-body').innerHTML      = pipeCard('ocr', counts.ocr || {}, computeThroughput('ocr'));
   document.getElementById('features-body').innerHTML = pipeCard('features', counts.features || {}, computeThroughput('features'));
   document.getElementById('embed-body').innerHTML    = pipeCard('embed', counts.embed || {}, computeThroughput('embed'));
+  document.getElementById('brief-body').innerHTML    = pipeCard('brief', counts.brief || {}, computeThroughput('brief'));
   document.getElementById('workers-body').innerHTML  = renderWorkers(status.active_workers || {});
   document.getElementById('disk-body').innerHTML     = renderDisk(disk);
   document.getElementById('errors-body').innerHTML   = renderErrors(status.recent_dead_jobs || []);
