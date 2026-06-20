@@ -90,10 +90,11 @@ def test_text_marker_regexes():
     assert not any(pat.search("deleted the file") for pat in DELETED_TEXT_PATTERNS)
 
 def test_context_clipping(test_config):
-    # Scenario 1: Line limit determines the window (redaction_context_lines = 2, redaction_context_chars = 300)
+    # Scenario 1: Paragraph-aware extraction — no blank lines means full paragraph collected
+    # (redaction_context_lines is now unused; redaction_context_chars=300 allows all lines)
     test_config.features["redaction_context_lines"] = 2
     test_config.features["redaction_context_chars"] = 300
-    
+
     ocr_data = [{
         "page_no": 1,
         "lines": [
@@ -106,29 +107,29 @@ def test_context_clipping(test_config):
             {"text": "Sixth line", "bbox": [0, 0.6, 1, 0.7]},
         ]
     }]
-    
+
     res = process_features(None, ocr_data, test_config)
     assert len(res["redactions"]) == 1
     red = res["redactions"][0]
-    
-    # Should get exactly the 2 preceding lines
-    assert red["context_before"] == "Second line\nThird line"
-    # Should get exactly the 2 succeeding lines
-    assert red["context_after"] == "Fourth line\nFifth line"
-    
-    # Scenario 2: Character limit determines the window (redaction_context_lines = 10, redaction_context_chars = 10)
+
+    # No blank-line boundary → all preceding non-blank lines collected (within 300 chars)
+    assert red["context_before"] == "First line\nSecond line\nThird line"
+    # No blank-line boundary → all succeeding non-blank lines collected (within 300 chars)
+    assert red["context_after"] == "Fourth line\nFifth line\nSixth line"
+
+    # Scenario 2: Character limit determines the window (redaction_context_chars = 10)
     test_config.features["redaction_context_lines"] = 10
     test_config.features["redaction_context_chars"] = 10
-    
+
     res_char = process_features(None, ocr_data, test_config)
     red_char = res_char["redactions"][0]
-    
-    # Preceding text joined: "First line\nSecond line\nThird line"
-    # Char limit 10: last 10 chars -> "Third line" (length 10)
+
+    # Backward scan: "Third line" (10 chars) hits char limit, so only that line is collected.
+    # "\n".join(["Third line"])[-10:] == "Third line"
     assert red_char["context_before"] == "Third line"
-    
-    # Succeeding text joined: "Fourth line\nFifth line\nSixth line"
-    # Char limit 10: first 10 chars -> "Fourth lin" (length 10)
+
+    # Forward scan: "Fourth line" (11 chars) hits char limit, so only that line is collected.
+    # "\n".join(["Fourth line"])[:10] == "Fourth lin"
     assert red_char["context_after"] == "Fourth lin"
 
 

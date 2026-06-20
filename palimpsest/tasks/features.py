@@ -420,13 +420,32 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                     digit = next((g for g in m.groups() if g is not None), "1")
                     label = f"(b)({digit})"
                     
-                    before_lines = page_lines[max(0, i - redaction_context_lines):i]
-                    after_lines = page_lines[i + 1:i + 1 + redaction_context_lines]
-                    before_text = "\n".join(bl["text"] for bl in before_lines)
-                    after_text = "\n".join(al["text"] for al in after_lines)
-                    context_before = before_text[-redaction_context_chars:] if before_text else ""
-                    context_after = after_text[:redaction_context_chars] if after_text else ""
-                    
+                    # context_before: collect backward from i-1 until blank line or char limit
+                    cb_lines: list[str] = []
+                    cb_chars = 0
+                    for j in range(i - 1, -1, -1):
+                        txt = page_lines[j]["text"].strip()
+                        if not txt:  # blank line = paragraph boundary
+                            break
+                        cb_chars += len(txt) + 1
+                        cb_lines.insert(0, page_lines[j]["text"])
+                        if cb_chars >= redaction_context_chars:
+                            break
+                    context_before = "\n".join(cb_lines)[-redaction_context_chars:] if cb_lines else ""
+
+                    # context_after: collect forward from i+1 until blank line or char limit
+                    ca_lines: list[str] = []
+                    ca_chars = 0
+                    for j in range(i + 1, len(page_lines)):
+                        txt = page_lines[j]["text"].strip()
+                        if not txt:  # blank line = paragraph boundary
+                            break
+                        ca_chars += len(txt) + 1
+                        ca_lines.append(page_lines[j]["text"])
+                        if ca_chars >= redaction_context_chars:
+                            break
+                    context_after = "\n".join(ca_lines)[:redaction_context_chars] if ca_lines else ""
+
                     redactions.append({
                         "page_no": page_no,
                         "kind": "exemption_stamp",
@@ -445,13 +464,32 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                     if m:
                         label = m.group(0).strip()
                         
-                        before_lines = page_lines[max(0, i - redaction_context_lines):i]
-                        after_lines = page_lines[i + 1:i + 1 + redaction_context_lines]
-                        before_text = "\n".join(bl["text"] for bl in before_lines)
-                        after_text = "\n".join(al["text"] for al in after_lines)
-                        context_before = before_text[-redaction_context_chars:] if before_text else ""
-                        context_after = after_text[:redaction_context_chars] if after_text else ""
-                        
+                        # context_before: collect backward from i-1 until blank line or char limit
+                        cb_lines_d: list[str] = []
+                        cb_chars_d = 0
+                        for j in range(i - 1, -1, -1):
+                            txt = page_lines[j]["text"].strip()
+                            if not txt:  # blank line = paragraph boundary
+                                break
+                            cb_chars_d += len(txt) + 1
+                            cb_lines_d.insert(0, page_lines[j]["text"])
+                            if cb_chars_d >= redaction_context_chars:
+                                break
+                        context_before = "\n".join(cb_lines_d)[-redaction_context_chars:] if cb_lines_d else ""
+
+                        # context_after: collect forward from i+1 until blank line or char limit
+                        ca_lines_d: list[str] = []
+                        ca_chars_d = 0
+                        for j in range(i + 1, len(page_lines)):
+                            txt = page_lines[j]["text"].strip()
+                            if not txt:  # blank line = paragraph boundary
+                                break
+                            ca_chars_d += len(txt) + 1
+                            ca_lines_d.append(page_lines[j]["text"])
+                            if ca_chars_d >= redaction_context_chars:
+                                break
+                        context_after = "\n".join(ca_lines_d)[:redaction_context_chars] if ca_lines_d else ""
+
                         redactions.append({
                             "page_no": page_no,
                             "kind": "deleted_text",
@@ -528,36 +566,64 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
                         if discard:
                             continue
                             
-                        # Find nearest OCR lines above and below
-                        line_above = None
-                        min_dist_above = float('inf')
-                        line_below = None
-                        min_dist_below = float('inf')
-                        
-                        limit_dist = 1.5 * median_height
-                        for line in page_lines:
-                            ly0, ly1 = line["bbox"][1], line["bbox"][3]
+                        # Find page_lines index of lines immediately above/below the black box
+                        above_idx = -1
+                        below_idx = len(page_lines)
+                        for li, line in enumerate(page_lines):
+                            ly1 = line["bbox"][3]
+                            ly0_line = line["bbox"][1]
                             if ly1 <= by0:
-                                dist = by0 - ly1
-                                if dist <= limit_dist and dist < min_dist_above:
-                                    min_dist_above = dist
-                                    line_above = line
-                            elif ly0 >= by1:
-                                dist = ly0 - by1
-                                if dist <= limit_dist and dist < min_dist_below:
-                                    min_dist_below = dist
-                                    line_below = line
-                                    
-                        context_before = line_above["text"] if line_above else ""
-                        context_after = line_below["text"] if line_below else ""
-                        
+                                above_idx = li
+                            elif ly0_line >= by1 and below_idx == len(page_lines):
+                                below_idx = li
+
+                        # Paragraph-aware backward scan from above_idx
+                        cb_lines_b: list[str] = []
+                        cb_chars_b = 0
+                        for j in range(above_idx, -1, -1):
+                            txt = page_lines[j]["text"].strip()
+                            if not txt:
+                                break
+                            cb_chars_b += len(txt) + 1
+                            cb_lines_b.insert(0, page_lines[j]["text"])
+                            if cb_chars_b >= redaction_context_chars:
+                                break
+                        context_before = "\n".join(cb_lines_b)[-redaction_context_chars:] if cb_lines_b else ""
+
+                        # Paragraph-aware forward scan from below_idx
+                        ca_lines_b: list[str] = []
+                        ca_chars_b = 0
+                        for j in range(below_idx, len(page_lines)):
+                            txt = page_lines[j]["text"].strip()
+                            if not txt:
+                                break
+                            ca_chars_b += len(txt) + 1
+                            ca_lines_b.append(page_lines[j]["text"])
+                            if ca_chars_b >= redaction_context_chars:
+                                break
+                        context_after = "\n".join(ca_lines_b)[:redaction_context_chars] if ca_lines_b else ""
+
+                        # Estimate char_capacity from bbox width and adjacent text font metrics
+                        box_width_px = rw  # pixel width of black box
+                        char_width_px = None
+                        ref_line = page_lines[above_idx] if above_idx >= 0 else (page_lines[below_idx] if below_idx < len(page_lines) else None)
+                        if ref_line:
+                            ref_text = ref_line["text"].strip()
+                            ref_bbox = ref_line["bbox"]
+                            ref_width_px = (ref_bbox[2] - ref_bbox[0]) * pw  # convert normalized to pixel
+                            if ref_text and ref_width_px > 0:
+                                char_width_px = ref_width_px / max(len(ref_text), 1)
+
+                        char_capacity = int(box_width_px / char_width_px) if char_width_px and char_width_px > 0 else None
+
                         redactions.append({
                             "page_no": page_no,
                             "kind": "black_box",
                             "label": "black_box",
                             "bbox": [bx0, by0, bx1, by1],
                             "context_before": context_before,
-                            "context_after": context_after
+                            "context_after": context_after,
+                            "char_capacity": char_capacity,
                         })
             except Exception as e:
                 logger.error(f"Error processing black boxes on page {page_no}: {e}")
