@@ -14,7 +14,7 @@ UV="$(command -v uv)"
 
 STALE_SECS=900      # seconds of log silence → considered stuck (1 check cycle = 15 min)
 
-GEMINI_WORKERS=0  # disabled — agy quota exhausted
+GEMINI_WORKERS=1
 GEMINI_BATCH=15
 GEMINI_CONCURRENCY=4
 
