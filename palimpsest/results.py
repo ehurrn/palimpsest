@@ -118,8 +118,8 @@ def process_features(
     for red in result.get("redactions", []):
         bbox = red.get("bbox", [None, None, None, None])
         conn.execute(
-            "INSERT INTO redactions (doc_id, page_no, kind, label, x0, y0, x1, y1, context_before, context_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (doc_id, red["page_no"], red["kind"], red.get("label"), bbox[0], bbox[1], bbox[2], bbox[3], red.get("context_before"), red.get("context_after")),
+            "INSERT INTO redactions (doc_id, page_no, kind, label, x0, y0, x1, y1, context_before, context_after, char_capacity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (doc_id, red["page_no"], red["kind"], red.get("label"), bbox[0], bbox[1], bbox[2], bbox[3], red.get("context_before"), red.get("context_after"), red.get("char_capacity")),
         )
 
     for ent in result.get("entities", []):

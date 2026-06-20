@@ -1,6 +1,7 @@
 import sqlite3
-from pathlib import Path
+
 from palimpsest.config import Config
+
 
 def connect(cfg: Config) -> sqlite3.Connection:
     cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -16,7 +17,7 @@ def migrate(cfg: Config) -> None:
     with conn:
         conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)")
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (0)")
-        
+
         # DDL from 00-ARCHITECTURE.md §5
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS documents (
@@ -50,6 +51,7 @@ def migrate(cfg: Config) -> None:
               label    TEXT,
               x0 REAL, y0 REAL, x1 REAL, y1 REAL,
               context_before TEXT, context_after TEXT,
+              char_capacity INTEGER,
               FOREIGN KEY (doc_id, page_no) REFERENCES pages(doc_id, page_no)
             );
 
@@ -105,7 +107,14 @@ def migrate(cfg: Config) -> None:
               decided_by TEXT, decided_at TEXT
             );
         """)
-        conn.execute("UPDATE schema_version SET version = 1")
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+
+        if version < 2:
+            try:
+                conn.execute("ALTER TABLE redactions ADD COLUMN char_capacity INTEGER")
+            except sqlite3.OperationalError:
+                pass
+            conn.execute("UPDATE schema_version SET version = 2")
     conn.close()
 
 if __name__ == "__main__":

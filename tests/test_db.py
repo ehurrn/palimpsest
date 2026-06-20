@@ -38,6 +38,9 @@ classify = "m"
 keep_alive = "1h"
 [nodes]
 n = []
+[orchestrator]
+port = 8079
+daemon_interval = 300
 """)
     return load(conf_file)
 
