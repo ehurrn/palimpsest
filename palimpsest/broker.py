@@ -9,7 +9,10 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, List
 
+import shutil
+
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -196,6 +199,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
 
 @app.post("/enqueue")
 def enqueue(job: EnqueuePayload):
@@ -454,3 +465,42 @@ def get_ocr(doc_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path)
+
+
+@app.get("/disk")
+def disk_usage():
+    usage = shutil.disk_usage(cfg.storage_root)
+    return {
+        "total": usage.total,
+        "used": usage.used,
+        "free": usage.free,
+        "pct_used": round(usage.used / usage.total * 100, 1),
+    }
+
+
+@app.get("/harvest/stats")
+def harvest_stats():
+    conn = connect(cfg)
+    try:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*)                                           AS total,
+                SUM(CASE WHEN status='cataloged' THEN 1 ELSE 0 END)  AS cataloged,
+                SUM(CASE WHEN status='indexed'   THEN 1 ELSE 0 END)  AS indexed,
+                SUM(CASE WHEN has_fulltext=1     THEN 1 ELSE 0 END)  AS has_pdf,
+                SUM(CASE WHEN has_fulltext=1 AND status='cataloged' THEN 1 ELSE 0 END) AS pdf_unfetched,
+                SUM(CASE WHEN has_fulltext=1 AND status='indexed'   THEN 1 ELSE 0 END) AS pdf_fetched
+            FROM documents
+            """
+        ).fetchone()
+        return {
+            "total": row[0],
+            "cataloged": row[1],
+            "indexed": row[2],
+            "has_pdf": row[3],
+            "pdf_unfetched": row[4],
+            "pdf_fetched": row[5],
+        }
+    finally:
+        conn.close()

@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from palimpsest.config import load as load_config  # noqa: E402
 
 GEMINI_BIN = "/opt/homebrew/bin/gemini"
-MODEL = "gemini-3.1-flash-lite-preview"  # 4M ctx, 4M TPM
+MODEL = "gemini-3.1-flash-lite"
 WORKER_ID = "gemini-features"
 
 MAX_CHARS_PER_PAGE = 4000  # per-page cap; keeps very long pages from dominating

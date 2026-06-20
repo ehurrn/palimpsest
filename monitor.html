@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Palimpsest Monitor</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --purple: #a855f7;
+    --orange: #f97316;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; }
+  header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.05em; color: var(--text); }
+  #refresh-info { color: var(--muted); font-size: 11px; }
+  #countdown { color: var(--blue); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; padding: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .card-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 10px; }
+  .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--muted); }
+  .stat-value { font-weight: 600; }
+  .green { color: var(--green); }
+  .yellow { color: var(--yellow); }
+  .red { color: var(--red); }
+  .blue { color: var(--blue); }
+  .purple { color: var(--purple); }
+  .orange { color: var(--orange); }
+  .bar-wrap { margin-top: 8px; background: var(--border); border-radius: 4px; height: 6px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s; }
+  .worker-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .worker-row:last-child { border-bottom: none; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .worker-name { flex: 1; font-weight: 600; }
+  .worker-age { color: var(--muted); font-size: 11px; }
+  .error-list { max-height: 160px; overflow-y: auto; }
+  .error-item { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.04); color: var(--red); font-size: 11px; }
+  .error-item span { color: var(--muted); }
+  .throughput { color: var(--green); font-size: 11px; }
+  .pipeline-block { margin-top: 8px; }
+  .pipeline-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .p-stat { background: rgba(255,255,255,0.03); border-radius: 5px; padding: 7px 10px; }
+  .p-stat-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .p-stat-value { font-size: 18px; font-weight: 700; margin-top: 1px; }
+  .p-stat-small { font-size: 12px; }
+  #error-banner { display: none; margin: 0 16px; padding: 8px 14px; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); border-radius: 6px; color: var(--red); font-size: 12px; }
+  .wide { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#127957; PALIMPSEST PIPELINE</h1>
+  <div id="refresh-info">Updated <span id="last-update">—</span> &nbsp;·&nbsp; next in <span id="countdown">10</span>s</div>
+</header>
+<div id="error-banner"></div>
+<div class="grid" id="grid">
+  <div class="card" id="card-harvest">
+    <div class="card-title">Harvest Corpus</div>
+    <div id="harvest-body">Loading…</div>
+  </div>
+  <div class="card" id="card-ocr">
+    <div class="card-title">OCR Queue</div>
+    <div id="ocr-body">Loading…</div>
+  </div>
+  <div class="card" id="card-features">
+    <div class="card-title">Features Queue</div>
+    <div id="features-body">Loading…</div>
+  </div>
+  <div class="card" id="card-embed">
+    <div class="card-title">Embed Queue</div>
+    <div id="embed-body">Loading…</div>
+  </div>
+  <div class="card" id="card-workers">
+    <div class="card-title">Workers</div>
+    <div id="workers-body">Loading…</div>
+  </div>
+  <div class="card" id="card-disk">
+    <div class="card-title">Disk — gonktop</div>
+    <div id="disk-body">Loading…</div>
+  </div>
+  <div class="card wide" id="card-errors">
+    <div class="card-title">Recent Dead Jobs</div>
+    <div id="errors-body">Loading…</div>
+  </div>
+</div>
+
+<script>
+const BROKER = 'http://192.168.0.58:8077';
+const REFRESH = 10; // seconds
+
+// Ring buffer for throughput — stores {ts, done: {ocr, features, embed}}
+const history = [];
+const MAX_HIST = 60; // keep 10 min at 10s intervals
+
+let countdown = REFRESH;
+
+function fmt(n) { return n == null ? '—' : n.toLocaleString(); }
+function fmtBytes(b) {
+  if (b >= 1e12) return (b/1e12).toFixed(1) + ' TB';
+  if (b >= 1e9)  return (b/1e9).toFixed(1)  + ' GB';
+  return (b/1e6).toFixed(0) + ' MB';
+}
+function ageSecs(isoStr) {
+  return Math.round((Date.now() - new Date(isoStr).getTime()) / 1000);
+}
+function fmtAge(secs) {
+  if (secs < 60) return secs + 's ago';
+  if (secs < 3600) return Math.floor(secs/60) + 'm ago';
+  return Math.floor(secs/3600) + 'h ago';
+}
+function workerClass(secs) {
+  if (secs < 120) return 'green';
+  if (secs < 300) return 'yellow';
+  return 'red';
+}
+
+function pipeCard(type, counts, tphr) {
+  const pending = counts.pending || 0;
+  const leased  = counts.leased  || 0;
+  const done    = counts.done    || 0;
+  const dead    = counts.dead    || 0;
+  const failed  = counts.failed  || 0;
+
+  const tpStr = tphr != null ? `<span class="throughput">↑ ${tphr.toFixed(1)}/min</span>` : '';
+
+  return `
+    <div class="pipeline-grid">
+      <div class="p-stat">
+        <div class="p-stat-label">Pending</div>
+        <div class="p-stat-value ${pending > 0 ? 'blue' : 'green'}">${fmt(pending)}</div>
+      </div>
+      <div class="p-stat">
+        <div class="p-stat-label">Active</div>
+        <div class="p-stat-value ${leased > 0 ? 'yellow' : 'muted'}">${fmt(leased)}</div>
+      </div>
+      <div class="p-stat">
+        <div class="p-stat-label">Done</div>
+        <div class="p-stat-value green p-stat-small">${fmt(done)} ${tpStr}</div>
+      </div>
+      <div class="p-stat">
+        <div class="p-stat-label">Dead</div>
+        <div class="p-stat-value ${dead > 0 ? 'red' : 'green'}">${fmt(dead + failed)}</div>
+      </div>
+    </div>`;
+}
+
+function computeThroughput(type) {
+  if (history.length < 2) return null;
+  const old = history[0];
+  const cur = history[history.length - 1];
+  const deltaSecs = (cur.ts - old.ts) / 1000;
+  if (deltaSecs < 5) return null;
+  const deltaDone = (cur.done[type] || 0) - (old.done[type] || 0);
+  return deltaDone / (deltaSecs / 60);
+}
+
+async function fetchAll() {
+  const [status, harvest, disk] = await Promise.all([
+    fetch(BROKER + '/status').then(r => r.json()),
+    fetch(BROKER + '/harvest/stats').then(r => r.json()),
+    fetch(BROKER + '/disk').then(r => r.json()),
+  ]);
+  return { status, harvest, disk };
+}
+
+function renderHarvest(h) {
+  const pctIndexed = h.total > 0 ? (h.indexed / h.total * 100) : 0;
+  const pctFetched = h.has_pdf > 0 ? (h.pdf_fetched / h.has_pdf * 100) : 0;
+  return `
+    <div class="stat-row"><span class="stat-label">Total docs</span><span class="stat-value">${fmt(h.total)}</span></div>
+    <div class="stat-row"><span class="stat-label">Cataloged</span><span class="stat-value blue">${fmt(h.cataloged)}</span></div>
+    <div class="stat-row"><span class="stat-label">Indexed (full)</span><span class="stat-value green">${fmt(h.indexed)} <span style="color:var(--muted);font-size:11px">(${pctIndexed.toFixed(1)}%)</span></span></div>
+    <div class="stat-row"><span class="stat-label">Have PDF</span><span class="stat-value purple">${fmt(h.has_pdf)}</span></div>
+    <div class="stat-row"><span class="stat-label">PDFs fetched</span><span class="stat-value green">${fmt(h.pdf_fetched)} / ${fmt(h.has_pdf)}</span></div>
+    <div class="stat-row"><span class="stat-label">PDFs pending fetch</span><span class="stat-value ${h.pdf_unfetched > 0 ? 'yellow' : 'green'}">${fmt(h.pdf_unfetched)}</span></div>
+    <div class="bar-wrap" style="margin-top:10px" title="${pctFetched.toFixed(1)}% fetched">
+      <div class="bar-fill" style="width:${pctFetched.toFixed(1)}%;background:var(--purple)"></div>
+    </div>`;
+}
+
+function renderWorkers(active) {
+  const nodes = Object.entries(active);
+  if (nodes.length === 0) return '<span style="color:var(--red)">No active workers</span>';
+  return nodes.map(([name, iso]) => {
+    const secs = ageSecs(iso);
+    const cls = workerClass(secs);
+    return `<div class="worker-row">
+      <div class="dot" style="background:var(--${cls})"></div>
+      <div class="worker-name">${name}</div>
+      <div class="worker-age">${fmtAge(secs)}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderDisk(d) {
+  const pct = d.pct_used;
+  const color = pct > 85 ? 'red' : pct > 70 ? 'yellow' : 'green';
+  return `
+    <div class="stat-row"><span class="stat-label">Total</span><span class="stat-value">${fmtBytes(d.total)}</span></div>
+    <div class="stat-row"><span class="stat-label">Used</span><span class="stat-value ${color}">${fmtBytes(d.used)} (${pct}%)</span></div>
+    <div class="stat-row"><span class="stat-label">Free</span><span class="stat-value green">${fmtBytes(d.free)}</span></div>
+    <div class="bar-wrap" style="margin-top:10px">
+      <div class="bar-fill" style="width:${pct}%;background:var(--${color})"></div>
+    </div>`;
+}
+
+function renderErrors(jobs) {
+  if (!jobs || jobs.length === 0) return '<span class="green">None</span>';
+  return `<div class="error-list">${jobs.map(j =>
+    `<div class="error-item"><span>[${j.type}/${j.doc_id}]</span> ${j.error || 'unknown'}</div>`
+  ).join('')}</div>`;
+}
+
+async function refresh() {
+  let data;
+  try {
+    data = await fetchAll();
+  } catch (e) {
+    document.getElementById('error-banner').style.display = 'block';
+    document.getElementById('error-banner').textContent = 'Broker unreachable: ' + e.message;
+    return;
+  }
+  document.getElementById('error-banner').style.display = 'none';
+
+  const { status, harvest, disk } = data;
+  const counts = status.job_counts || {};
+
+  // Update history
+  history.push({
+    ts: Date.now(),
+    done: {
+      ocr:      (counts.ocr?.done || 0),
+      features: (counts.features?.done || 0),
+      embed:    (counts.embed?.done || 0),
+    }
+  });
+  if (history.length > MAX_HIST) history.shift();
+
+  document.getElementById('harvest-body').innerHTML  = renderHarvest(harvest);
+  document.getElementById('ocr-body').innerHTML      = pipeCard('ocr', counts.ocr || {}, computeThroughput('ocr'));
+  document.getElementById('features-body').innerHTML = pipeCard('features', counts.features || {}, computeThroughput('features'));
+  document.getElementById('embed-body').innerHTML    = pipeCard('embed', counts.embed || {}, computeThroughput('embed'));
+  document.getElementById('workers-body').innerHTML  = renderWorkers(status.active_workers || {});
+  document.getElementById('disk-body').innerHTML     = renderDisk(disk);
+  document.getElementById('errors-body').innerHTML   = renderErrors(status.recent_dead_jobs || []);
+
+  document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+}
+
+// Countdown ticker
+setInterval(() => {
+  countdown--;
+  if (countdown <= 0) {
+    countdown = REFRESH;
+    refresh();
+  }
+  document.getElementById('countdown').textContent = countdown;
+}, 1000);
+
+// Initial load
+refresh();
+</script>
+</body>
+</html>

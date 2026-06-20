@@ -16,6 +16,7 @@ STALE_SECS=300      # seconds of log silence → considered stuck
 
 GEMINI_WORKERS=1  # set 0 to disable
 GEMINI_BATCH=15
+GEMINI_CONCURRENCY=4
 
 GONKTOP="herren@192.168.0.58"
 M5="herren@192.168.0.63"
@@ -86,7 +87,7 @@ start_gemini_workers() {
     for i in $(seq 1 "$GEMINI_WORKERS"); do
         PYTHONUNBUFFERED=1 nohup "$UV" run python -u \
             "$REPO/scripts/gemini_features_worker.py" \
-            --concurrency 1 --batch-size "$GEMINI_BATCH" --loop \
+            --concurrency "$GEMINI_CONCURRENCY" --batch-size "$GEMINI_BATCH" --loop \
             </dev/null >>/tmp/gemini-f${i}.log 2>&1 &
         log "    Gemini $i PID $!"
     done

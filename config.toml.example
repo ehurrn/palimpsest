@@ -16,8 +16,8 @@ port = 8078
 
 [harvest]
 base_url = "https://www.osti.gov/opennet"
-rate_limit_rps = 0.75     # PDF download rate (approved by webmaster: 40-50/min)
-catalog_rate_limit_rps = 2.0  # catalog page requests (HTML, much lighter)
+rate_limit_rps = 100.0    # no server cap — webmaster confirmed; 429 backoff handles any throttling
+catalog_rate_limit_rps = 10.0  # catalog HTML pages — no server cap
 backoff_initial_s = 5
 backoff_max_s = 300
 user_agent = "palimpsest-research/0.1 (contact: j.eric.herren@gmail.com)"
