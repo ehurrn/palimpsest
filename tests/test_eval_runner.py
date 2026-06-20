@@ -39,6 +39,8 @@ def _cfg(tmp_path):
     default_seed=1
     eval_db_path="{{storage.root}}/eval/eval.db"
     artifact_path="{{storage.root}}/eval/calibration.json"
+    [orchestrator]
+    heartbeat_interval_secs = 900
     """)
     p = tmp_path / "config.toml"
     p.write_text(toml)

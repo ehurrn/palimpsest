@@ -68,6 +68,8 @@ def setup_config(tmp_path_factory):
     keep_alive = "24h"
     [nodes]
     m4 = ["dummy_ok", "dummy_fail", "dummy_permanent_fail"]
+    [orchestrator]
+    heartbeat_interval_secs = 900
     """
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text(config_content)

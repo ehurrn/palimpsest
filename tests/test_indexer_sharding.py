@@ -60,6 +60,8 @@ def temp_cfg(tmp_path):
     keep_alive = "24h"
     [nodes]
     gonktop = []
+[orchestrator]
+    heartbeat_interval_secs = 900
     """
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text(config_content)

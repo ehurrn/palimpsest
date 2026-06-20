@@ -74,6 +74,8 @@ def seeded_db(tmp_path_factory):
     gate_enforcement = "annotate"
     [nodes]
     gonktop = []
+[orchestrator]
+    heartbeat_interval_secs = 900
     """
     cfg_file = tmp_path / "config.toml"
     cfg_file.write_text(config_content)

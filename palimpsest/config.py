@@ -26,6 +26,7 @@ class Config:
     gapjoin: Dict[str, Any]
     models: Dict[str, Any]
     nodes: Dict[str, Any]
+    orchestrator: Dict[str, Any]
 
 def load(path: str | Path | None = None) -> Config:
     if not path:
@@ -67,4 +68,5 @@ def load(path: str | Path | None = None) -> Config:
         gapjoin=data["gapjoin"],
         models=data["models"],
         nodes=data["nodes"],
+        orchestrator=data.get("orchestrator", {}),
     )

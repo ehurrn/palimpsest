@@ -37,6 +37,8 @@ classify = "m"
 keep_alive = "1h"
 [nodes]
 n = []
+[orchestrator]
+heartbeat_interval_secs = 900
 """)
     cfg = load(conf_file)
     assert cfg.storage_root == Path("/tmp/pal")

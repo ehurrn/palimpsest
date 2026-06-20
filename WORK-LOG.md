@@ -1,3 +1,4 @@
-[2026-06-19] Started extraction task for doc IDs 1125068, 1125070, 1125071, 1125072, 1125073, 1125074, 1125075, 1125076, 1125077, 1125078, 1125079, 1125080, 1125081, 1125082, 1125069.
-[2026-06-19] Starting forensic integrity audit for Phase 2 Type 'f' and 'b' implementation.
-[2026-06-19] Started extraction task for doc IDs 16000151-16000164, 16000166.
+[2026-06-19] Starting: Phase 2 Scaling & Safety Heuristics Implementation Plan (TASK-20).
+[2026-06-19] Completed Task 16: Calibration (PAV isotonic + Wilson threshold + artifact writer + CLI command). Commit pending.
+[2026-06-19] Starting: Running project pre-flight check via `pytest`.
+[2026-06-19] Starting: Phase 3 Scaling & Safety Heuristics Implementation Plan (TASK-20).
