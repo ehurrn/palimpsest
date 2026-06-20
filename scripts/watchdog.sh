@@ -85,6 +85,25 @@ start_m4_worker() {
     log "    PID $!"
 }
 
+start_claude_brief_worker() {
+    log "  → starting Claude brief worker (Sonnet 4.6)"
+    source "$HOME/.zprofile" 2>/dev/null || true
+    PYTHONUNBUFFERED=1 nohup "$UV" run python -u \
+        "$REPO/scripts/claude_brief_worker.py" \
+        --concurrency 2 --loop \
+        </dev/null >>/tmp/claude-brief.log 2>&1 &
+    log "    Claude brief worker PID $!"
+}
+
+check_claude_brief_worker() {
+    local pids age
+    pids=$(pgrep -f "claude_brief_worker" 2>/dev/null || true)
+    age=$(local_age /tmp/claude-brief.log)
+    if [ -z "$pids" ]; then log "Claude brief worker: DEAD"; return 1; fi
+    if [ "$age" -gt "$STALE_SECS" ]; then log "Claude brief worker: STALE (${age}s silent)"; return 1; fi
+    log "Claude brief worker: ok (log ${age}s ago)"
+}
+
 start_ollama_worker() {
     log "  → starting Ollama features worker (qwen3:8b)"
     source "$HOME/.zprofile" 2>/dev/null || true
@@ -253,6 +272,7 @@ log "    Watching: M4 (local) · gonktop (192.168.0.58) · M5 (192.168.0.63)"
 check_m4_worker      || { kill_local "palimpsest.worker.*m4"; start_m4_worker; }
 check_gemini_workers || { kill_local "gemini_features_worker"; sleep 1; start_gemini_workers; }
 check_ollama_worker  || { kill_local "ollama_features_worker"; sleep 1; start_ollama_worker; }
+check_claude_brief_worker || { kill_local "claude_brief_worker"; sleep 1; start_claude_brief_worker; }
 
 # gonktop
 check_gonktop_broker || { kill_remote "$GONKTOP" "uvicorn.*broker"; sleep 1; start_gonktop_broker; }
