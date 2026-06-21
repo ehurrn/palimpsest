@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 from palimpsest.config import Config
@@ -14,12 +15,20 @@ logger = logging.getLogger(__name__)
 
 
 @handler("gap_join")
-def handle_gap_join(cfg: Config, job: dict[str, Any]) -> dict[str, Any]:
+def handle_gap_join(
+    cfg: Config,
+    job: dict[str, Any],
+    *,
+    lost_evt: threading.Event | None = None,
+    shutdown_event: threading.Event | None = None,
+) -> dict[str, Any]:
     """Run gap join for all pending redactions in a document.
 
     Args:
         cfg: Loaded configuration.
         job: Job dict with doc_id.
+        lost_evt: Set by heartbeat thread if broker revokes the lease.
+        shutdown_event: Set on SIGTERM. Accepted for interface consistency.
 
     Returns:
         Result dict with count of redactions processed.

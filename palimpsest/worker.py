@@ -58,6 +58,36 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
+def _post_with_retry(
+    client: httpx.Client,
+    url: str,
+    json_body: dict,
+    max_retries: int = 5,
+) -> None:
+    """POST json_body to url, retrying on network errors with exponential backoff.
+
+    Only retries on httpx.RequestError (connection failures, timeouts, etc.).
+    HTTP 4xx/5xx responses from the server are not retried — they indicate a
+    logic problem (e.g. ownership mismatch) that retrying cannot fix.
+    """
+    for attempt in range(max_retries):
+        try:
+            client.post(url, json=json_body, timeout=10.0)
+            return
+        except httpx.RequestError as exc:
+            if attempt == max_retries - 1:
+                logging.error(
+                    f"Failed to POST {url} after {max_retries} attempts: {exc}"
+                )
+            else:
+                sleep_secs = 2 ** attempt
+                logging.warning(
+                    f"POST {url} attempt {attempt + 1} failed ({exc}); "
+                    f"retrying in {sleep_secs}s..."
+                )
+                time.sleep(sleep_secs)
+
+
 def warm_model(model_name: str, embed: bool = False):
     url = "http://localhost:11434/api/embeddings" if embed else "http://localhost:11434/api/generate"
     payload = {
@@ -72,7 +102,7 @@ def warm_model(model_name: str, embed: bool = False):
 
     start_time = time.time()
     try:
-        resp = httpx.post(url, json=payload, timeout=2.0)
+        resp = httpx.post(url, json=payload, timeout=30.0)
         duration = time.time() - start_time
         logging.info(f"Warmed model {model_name} in {duration:.2f}s (status {resp.status_code})")
     except Exception as e:
@@ -190,15 +220,15 @@ def run_worker(node_name: str, once: bool = False):
                 handler_func = HANDLERS.get(job_type)
                 if not handler_func:
                     logging.error(f"No handler registered for job type: {job_type}")
-                    client.post(
+                    _post_with_retry(
+                        client,
                         f"{broker_url}/fail",
-                        json={
+                        {
                             "worker_id": node_name,
                             "job_id": job_id,
                             "error": f"No handler registered for {job_type}",
-                            "retryable": False
+                            "retryable": False,
                         },
-                        timeout=10.0,
                     )
                     with _job_lock:
                         _current_job_id = None
@@ -210,45 +240,45 @@ def run_worker(node_name: str, once: bool = False):
                     continue
 
                 try:
-                    result = handler_func(cfg, job)
+                    result = handler_func(cfg, job, lost_evt=lost_evt, shutdown_event=shutdown_event)
                     duration = time.time() - start_time
 
                     if lost_evt.is_set():
                         logging.warning(f"Discarding result for job {job_id} since it was lost.")
                     else:
-                        client.post(
+                        _post_with_retry(
+                            client,
                             f"{broker_url}/complete",
-                            json={
+                            {
                                 "worker_id": node_name,
                                 "job_id": job_id,
-                                "result": result
+                                "result": result,
                             },
-                            timeout=10.0,
                         )
                         logging.info(f"Completed job {job_id} ({job_type}) for doc {doc_id} in {duration:.2f}s")
                 except PermanentJobError as e:
                     logging.error(f"Permanent handler error on job {job_id}: {e}")
-                    client.post(
+                    _post_with_retry(
+                        client,
                         f"{broker_url}/fail",
-                        json={
+                        {
                             "worker_id": node_name,
                             "job_id": job_id,
                             "error": str(e),
-                            "retryable": False
+                            "retryable": False,
                         },
-                        timeout=10.0,
                     )
                 except Exception as e:
                     logging.error(f"Handler error on job {job_id}: {e}")
-                    client.post(
+                    _post_with_retry(
+                        client,
                         f"{broker_url}/fail",
-                        json={
+                        {
                             "worker_id": node_name,
                             "job_id": job_id,
                             "error": str(e),
-                            "retryable": True
+                            "retryable": True,
                         },
-                        timeout=10.0,
                     )
 
                 with _job_lock:

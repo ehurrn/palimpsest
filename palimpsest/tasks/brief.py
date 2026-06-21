@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-import textwrap
+import threading
 from typing import Any
 
 import httpx
@@ -176,11 +176,20 @@ def _reduce_slices(cfg: Config, doc_id: str, slice_briefs: list[dict[str, Any]])
 
 
 @handler("brief")
-def handle_brief(cfg: Config, job: dict[str, Any]) -> dict[str, Any]:
+def handle_brief(
+    cfg: Config,
+    job: dict[str, Any],
+    *,
+    lost_evt: threading.Event | None = None,
+    shutdown_event: threading.Event | None = None,
+) -> dict[str, Any]:
     """Generate a structured per-document brief from OCR text.
 
     Input:  job["doc_id"] — fetches OCR over HTTP from broker.
     Output: dict matching the §1 output contract.
+
+    lost_evt / shutdown_event are checked between map-reduce slices so the
+    worker can abort before spending another minute on a dead job.
     """
     doc_id = job["doc_id"]
     logger.info("brief: starting doc %s", doc_id)
@@ -240,6 +249,19 @@ def handle_brief(cfg: Config, job: dict[str, Any]) -> dict[str, Any]:
         logger.info("brief: map phase — %d slices for doc %s", len(slices), doc_id)
         slice_briefs = []
         for i, sl in enumerate(slices):
+            # Check for lease loss or shutdown before each expensive LLM call.
+            if lost_evt is not None and lost_evt.is_set():
+                logger.warning(
+                    "brief: lease lost for doc %s, aborting at slice %d/%d",
+                    doc_id, i + 1, len(slices),
+                )
+                raise RuntimeError(f"brief: job lease lost for doc {doc_id}")
+            if shutdown_event is not None and shutdown_event.is_set():
+                logger.info(
+                    "brief: shutdown for doc %s, aborting at slice %d/%d",
+                    doc_id, i + 1, len(slices),
+                )
+                raise RuntimeError(f"brief: job cancelled due to shutdown for doc {doc_id}")
             logger.info("brief: map slice %d/%d for doc %s", i + 1, len(slices), doc_id)
             slice_briefs.append(_brief_slice(cfg, doc_id, sl))
 
@@ -247,9 +269,6 @@ def handle_brief(cfg: Config, job: dict[str, Any]) -> dict[str, Any]:
         result = _reduce_slices(cfg, doc_id, slice_briefs)
 
     # 3. Normalise and stamp required fields
-    # Validate that every claim/event page_no exists in the input OCR
-    valid_pages = {pn for pn, _ in page_pairs}
-
     claims = result.get("claims", [])
     for claim in claims:
         if "page_no" not in claim:

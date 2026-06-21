@@ -3,13 +3,12 @@ import datetime
 import fcntl
 import json
 import re
+import shutil
 import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any, List
-
-import shutil
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -312,9 +311,15 @@ def heartbeat(req: HeartbeatPayload):
 def complete(req: CompletePayload):
     conn = connect(cfg)
     now = utc_now_str()
-
-    with conn:
-        cur = conn.execute("SELECT type, doc_id, state, lease_owner FROM jobs WHERE job_id=?", (req.job_id,))
+    # BEGIN IMMEDIATE acquires the write lock before the SELECT, preventing
+    # concurrent /complete calls from racing to upgrade a read lock to a write
+    # lock and producing "database is locked" errors.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cur = conn.execute(
+            "SELECT type, doc_id, state, lease_owner FROM jobs WHERE job_id=?",
+            (req.job_id,),
+        )
         job = cur.fetchone()
         if not job or job["lease_owner"] != req.worker_id or job["state"] != "leased":
             raise HTTPException(status_code=409, detail="Ownership mismatch or job not leased")
@@ -329,6 +334,12 @@ def complete(req: CompletePayload):
         process_result(conn, cfg, job["type"], doc_id, req.result, now)
 
         conn.execute("UPDATE jobs SET state='done', updated_at=? WHERE job_id=?", (now, req.job_id))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
 
     return {"ok": True}
 
@@ -337,9 +348,14 @@ def fail(req: FailPayload):
     conn = connect(cfg)
     now = utc_now_str()
     max_attempts = cfg.broker["max_attempts"]
-
-    with conn:
-        cur = conn.execute("SELECT attempts, state, lease_owner FROM jobs WHERE job_id=?", (req.job_id,))
+    # BEGIN IMMEDIATE prevents concurrent /fail calls from racing to upgrade a
+    # read lock to a write lock, which causes "database is locked" errors.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cur = conn.execute(
+            "SELECT attempts, state, lease_owner FROM jobs WHERE job_id=?",
+            (req.job_id,),
+        )
         job = cur.fetchone()
         if not job or job["lease_owner"] != req.worker_id or job["state"] != "leased":
             raise HTTPException(status_code=409, detail="Ownership mismatch or job not leased")
@@ -348,14 +364,20 @@ def fail(req: FailPayload):
         if req.retryable and attempts < max_attempts:
             conn.execute(
                 "UPDATE jobs SET state='pending', error=?, updated_at=? WHERE job_id=?",
-                (req.error, now, req.job_id)
+                (req.error, now, req.job_id),
             )
         else:
             state = "dead" if attempts >= max_attempts else "failed"
             conn.execute(
                 "UPDATE jobs SET state=?, error=?, updated_at=? WHERE job_id=?",
-                (state, req.error, now, req.job_id)
+                (state, req.error, now, req.job_id),
             )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
 
     return {"status": "recorded"}
 

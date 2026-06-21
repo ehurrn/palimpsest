@@ -1,6 +1,7 @@
 """OCR task handler — extracts text from PDF pages (TASK-05)."""
 import logging
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -152,11 +153,22 @@ def _filter_and_sort_lines(lines: list[dict], min_confidence: float) -> list[dic
 
 
 @handler("ocr")
-def handle_ocr(cfg: Config, job: dict) -> list[dict]:
+def handle_ocr(
+    cfg: Config,
+    job: dict,
+    *,
+    lost_evt: threading.Event | None = None,
+    shutdown_event: threading.Event | None = None,
+) -> list[dict]:
     """Produce the page-array JSON (§6) for a document.
 
     Fetches the PDF from the broker, uses embedded text where available,
     falls back to OCR (Vision → Tesseract) for image-only pages.
+
+    lost_evt / shutdown_event are checked between pages so the worker can
+    abort a long OCR run as soon as the broker revokes the lease or a
+    SIGTERM is received, rather than grinding through all remaining pages
+    only to discard the result.
     """
     doc_id: str = job["doc_id"]
     broker_url = "http://%s:%s" % (cfg.broker["host"], cfg.broker["port"])
@@ -192,6 +204,21 @@ def handle_ocr(cfg: Config, job: dict) -> list[dict]:
         pages: list[dict] = []
 
         for idx in range(page_count):
+            # Check for lease loss or shutdown before each page so we free
+            # unified memory as soon as possible instead of finishing a dead job.
+            if lost_evt is not None and lost_evt.is_set():
+                log.warning(
+                    "doc %s: lease lost, aborting OCR after %d/%d pages",
+                    doc_id, idx, page_count,
+                )
+                break
+            if shutdown_event is not None and shutdown_event.is_set():
+                log.info(
+                    "doc %s: shutdown requested, aborting OCR after %d/%d pages",
+                    doc_id, idx, page_count,
+                )
+                break
+
             page_no = idx + 1
             page = doc[idx]
             width: float = page.rect.width

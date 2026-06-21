@@ -1,6 +1,7 @@
 # palimpsest/tasks/features.py
 import re
 import logging
+import threading
 from typing import List, Dict, Any
 import httpx
 import numpy as np
@@ -816,7 +817,13 @@ def process_features(pdf_bytes: bytes, ocr_data: List[Dict[str, Any]], cfg: Conf
     }
 
 @handler("features")
-def extract_features(cfg: Config, job: dict) -> dict:
+def extract_features(
+    cfg: Config,
+    job: dict,
+    *,
+    lost_evt: threading.Event | None = None,
+    shutdown_event: threading.Event | None = None,
+) -> dict:
     """Worker task handler for feature extraction."""
     doc_id = job["doc_id"]
     broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
