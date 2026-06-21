@@ -322,10 +322,13 @@ def fetch(limit: int | None = None, min_id: int | None = None, max_id: int | Non
         except Exception as e:
             print(f"Error fetching document {doc_id}: {e}", file=sys.stderr)
             now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            with conn:
-                conn.execute(
-                    "UPDATE documents SET status='error', error=? WHERE doc_id=?", (str(e), doc_id)
-                )
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE documents SET status='error', error=? WHERE doc_id=?", (str(e), doc_id)
+                    )
+            except Exception as db_err:
+                print(f"Warning: could not record error for {doc_id}: {db_err}", file=sys.stderr)
 
 
 def status():

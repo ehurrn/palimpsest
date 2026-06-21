@@ -8,7 +8,7 @@ def connect(cfg: Config) -> sqlite3.Connection:
     conn = sqlite3.connect(cfg.db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.row_factory = sqlite3.Row
     return conn
 
