@@ -228,9 +228,11 @@ def investigate(accession: str, config: Config) -> Path:
     conn = connect(config)
     conn.row_factory = sqlite3.Row
 
+    # GLOB (case-sensitive, no per-row LIKE casing) lets SQLite range-scan the
+    # doc_id primary-key B-tree on the prefix instead of full-scanning.
     matching_docs = conn.execute(
-        "SELECT doc_id FROM documents WHERE doc_id LIKE ?",
-        (f"{accession}%",),
+        "SELECT doc_id FROM documents WHERE doc_id GLOB ?",
+        (f"{accession}*",),
     ).fetchall()
     doc_ids = [r["doc_id"] for r in matching_docs]
 

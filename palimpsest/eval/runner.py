@@ -1,4 +1,5 @@
 """Eval runner: generate → isolated DB → real scorers → grade → persist."""
+
 from __future__ import annotations
 
 import datetime
@@ -10,12 +11,16 @@ import subprocess
 from palimpsest.config import Config
 from palimpsest.eval.embedding import deterministic_embed
 from palimpsest.eval.generators import (
-    gen_type_a_cases, gen_type_b_cases, gen_type_c_cases,
+    gen_type_a_cases,
+    gen_type_b_cases,
+    gen_type_c_cases,
+    gen_type_d_cases,
 )
-from palimpsest.eval.isolation import make_eval_config, fresh_eval_db, write_index
+from palimpsest.eval.isolation import fresh_eval_db, make_eval_config, write_index
 from palimpsest.eval.oracle import grade
 from palimpsest.scorers.type_a import TypeAScorer
 from palimpsest.scorers.type_c import TypeCScorer
+from palimpsest.scorers.type_d import TypeDScorer
 
 
 def _git_sha() -> str | None:
@@ -44,8 +49,13 @@ def _load_cases(conn, eval_cfg, run_id, cases, embed_fn):
             cur = conn.execute(
                 "INSERT INTO eval_cases (run_id, type_key, case_kind, spec, truth) "
                 "VALUES (?,?,?,?,?)",
-                (run_id, case.type_key, case.case_kind,
-                 json.dumps({"case_uid": case.case_uid}), json.dumps(case.truth)),
+                (
+                    run_id,
+                    case.type_key,
+                    case.case_kind,
+                    json.dumps({"case_uid": case.case_uid}),
+                    json.dumps(case.truth),
+                ),
             )
             case_ids[case.case_uid] = cur.lastrowid
             seen = set()
@@ -67,8 +77,15 @@ def _load_cases(conn, eval_cfg, run_id, cases, embed_fn):
                         "INSERT INTO entities "
                         "(doc_id,page_no,kind,text,norm,char_start,char_end) "
                         "VALUES (?,?,?,?,?,?,?)",
-                        (page.doc_id, page.page_no, e["kind"], e["text"],
-                         e["norm"], e["char_start"], e["char_end"]),
+                        (
+                            page.doc_id,
+                            page.page_no,
+                            e["kind"],
+                            e["text"],
+                            e["norm"],
+                            e["char_start"],
+                            e["char_end"],
+                        ),
                     )
                 cid = chunk_seq
                 chunk_seq += 1
@@ -84,8 +101,14 @@ def _load_cases(conn, eval_cfg, run_id, cases, embed_fn):
                         "INSERT INTO redactions "
                         "(doc_id,page_no,kind,label,context_before,context_after) "
                         "VALUES (?,?,?,?,?,?)",
-                        (page.doc_id, page.page_no, r["kind"], r["label"],
-                         r["context_before"], r["context_after"]),
+                        (
+                            page.doc_id,
+                            page.page_no,
+                            r["kind"],
+                            r["label"],
+                            r["context_before"],
+                            r["context_after"],
+                        ),
                     )
     write_index(eval_cfg, chunk_vectors)
     return case_ids
@@ -105,6 +128,15 @@ def _grade_and_store(conn, run_id, cases, case_ids):
                     (f"{case.case_uid}_A",),
                 ).fetchall()
                 answer = case.truth["answer_norm"]
+            elif case.type_key == "type_d":
+                # Detection task: a candidate on the initiation doc == a flagged
+                # gap. Grade the marker value "gap" against the case's truth.
+                rows = conn.execute(
+                    "SELECT score AS score, 'gap' AS norm FROM outcome_gap_candidates "
+                    "WHERE initiation_doc_id = ?",
+                    (f"{case.case_uid}_I",),
+                ).fetchall()
+                answer = case.truth.get("answer_norm")
             else:
                 rows = conn.execute(
                     "SELECT ilc.score AS score, e.norm AS norm "
@@ -120,14 +152,27 @@ def _grade_and_store(conn, run_id, cases, case_ids):
                     "INSERT INTO eval_results "
                     "(run_id, case_id, type_key, raw_score, score_components, predicted, label, confidence) "
                     "VALUES (?,?,?,?,?,?,?,?)",
-                    (run_id, cid, case.type_key, res.raw_score, None,
-                     res.predicted, res.label, None),
+                    (
+                        run_id,
+                        cid,
+                        case.type_key,
+                        res.raw_score,
+                        None,
+                        res.predicted,
+                        res.label,
+                        None,
+                    ),
                 )
 
 
-def run_eval(cfg: Config, *, embed_fn=None, n_per_kind: int = 5,
-             seed: int | None = None,
-             types: tuple[str, ...] = ("type_a", "type_b", "type_c")) -> int:
+def run_eval(
+    cfg: Config,
+    *,
+    embed_fn=None,
+    n_per_kind: int = 5,
+    seed: int | None = None,
+    types: tuple[str, ...] = ("type_a", "type_b", "type_c"),
+) -> int:
     """Run a full synthetic eval; return the run_id. Writes only to the eval DB."""
     seed = seed if seed is not None else int(cfg.eval.get("default_seed", 1337))
     embed_fn = embed_fn or deterministic_embed
@@ -141,6 +186,8 @@ def run_eval(cfg: Config, *, embed_fn=None, n_per_kind: int = 5,
         cases += gen_type_b_cases(n_per_kind, seed)
     if "type_c" in types:
         cases += gen_type_c_cases(n_per_kind, seed)
+    if "type_d" in types:
+        cases += gen_type_d_cases(n_per_kind, seed)
 
     conn = sqlite3.connect(eval_cfg.db_path)
     conn.row_factory = sqlite3.Row
@@ -153,6 +200,7 @@ def run_eval(cfg: Config, *, embed_fn=None, n_per_kind: int = 5,
         )
         conn.commit()
         run_id = cur.lastrowid
+        assert run_id is not None  # lastrowid is set after a successful INSERT
 
         case_ids = _load_cases(conn, eval_cfg, run_id, cases, embed_fn)
 
@@ -160,6 +208,8 @@ def run_eval(cfg: Config, *, embed_fn=None, n_per_kind: int = 5,
             TypeAScorer(embed_fn=embed_fn).run(conn, eval_cfg)
         if any(c.type_key == "type_c" for c in cases):
             TypeCScorer().run(conn, eval_cfg)
+        if any(c.type_key == "type_d" for c in cases):
+            TypeDScorer().run(conn, eval_cfg)
 
         _grade_and_store(conn, run_id, cases, case_ids)
 

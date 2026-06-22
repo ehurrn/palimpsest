@@ -1,6 +1,6 @@
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict
 
@@ -9,8 +9,10 @@ if sys.version_info < (3, 12):
 else:
     import tomllib
 
+
 class ConfigError(Exception):
     pass
+
 
 @dataclass(frozen=True)
 class Config:
@@ -27,12 +29,14 @@ class Config:
     models: Dict[str, Any]
     nodes: Dict[str, Any]
     orchestrator: Dict[str, Any]
-    brief: Dict[str, Any]
+    brief: Dict[str, Any] = field(default_factory=dict)
+    eval: Dict[str, Any] = field(default_factory=dict)
+
 
 def load(path: str | Path | None = None) -> Config:
     if not path:
         path = os.environ.get("PALIMPSEST_CONFIG", Path(__file__).parent.parent / "config.toml")
-    
+
     path = Path(path)
     if not path.exists():
         raise ConfigError(f"Config file not found: {path}")
@@ -41,7 +45,19 @@ def load(path: str | Path | None = None) -> Config:
         data = tomllib.load(f)
 
     # Validate top-level keys
-    required_sections = ["storage", "db", "broker", "mcp", "harvest", "ocr", "features", "embed", "gapjoin", "models", "nodes"]
+    required_sections = [
+        "storage",
+        "db",
+        "broker",
+        "mcp",
+        "harvest",
+        "ocr",
+        "features",
+        "embed",
+        "gapjoin",
+        "models",
+        "nodes",
+    ]
     missing = [s for s in required_sections if s not in data]
     if missing:
         raise ConfigError(f"Missing config sections: {', '.join(missing)}")
@@ -53,7 +69,7 @@ def load(path: str | Path | None = None) -> Config:
         return value
 
     context = {"storage.root": data["storage"]["root"]}
-    
+
     db_path = Path(expand_vars(data["db"]["path"], context))
 
     return Config(
@@ -70,11 +86,15 @@ def load(path: str | Path | None = None) -> Config:
         models=data["models"],
         nodes=data["nodes"],
         orchestrator=data.get("orchestrator", {}),
-        brief=data.get("brief", {
-            "model": data.get("models", {}).get("extract", "llama3.1:8b"),
-            "window_tokens": 6000,
-            "max_claims": 25,
-            "max_events": 25,
-            "temperature": 0.1,
-        }),
+        brief=data.get(
+            "brief",
+            {
+                "model": data.get("models", {}).get("extract", "llama3.1:8b"),
+                "window_tokens": 6000,
+                "max_claims": 25,
+                "max_events": 25,
+                "temperature": 0.1,
+            },
+        ),
+        eval={k: expand_vars(v, context) for k, v in data.get("eval", {}).items()},
     )

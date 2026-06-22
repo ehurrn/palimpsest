@@ -21,6 +21,11 @@ from palimpsest.results import process_result
 
 cfg = load()
 
+# /status memoization (Phase 1.5): serve a cached snapshot for this many seconds
+# to shield the DB from repeated GROUP BY scans under heavy polling.
+_STATUS_TTL_SECONDS = 5.0
+_status_cache: dict[str, Any] = {"expires": 0.0, "data": None}
+
 # doc_id is interpolated into filesystem paths (raw/, ocr/, features/ dirs), so
 # it must be a bare OSTI numeric id. Anything else (separators, "..", NUL, or
 # Unicode "digits" that str.isdigit() would wrongly accept) is rejected before
@@ -215,32 +220,32 @@ def enqueue(job: EnqueuePayload):
     validate_doc_id(job.doc_id)
     conn = connect(cfg)
     now = utc_now_str()
+    # Single atomic upsert (no try/except IntegrityError race). On conflict, a
+    # failed/dead job is reset to pending (attempts=0, error cleared, updated_at
+    # bumped); any other state is returned unchanged. created_at is never touched,
+    # so created_at != now reliably marks a conflict (the "deduped" signal).
     try:
         with conn:
-            cur = conn.execute(
-                "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+            row = conn.execute(
+                """
+                INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?)
+                ON CONFLICT(type, doc_id) DO UPDATE SET
+                    state      = CASE WHEN jobs.state IN ('failed', 'dead') THEN 'pending' ELSE jobs.state END,
+                    attempts   = CASE WHEN jobs.state IN ('failed', 'dead') THEN 0 ELSE jobs.attempts END,
+                    error      = CASE WHEN jobs.state IN ('failed', 'dead') THEN NULL ELSE jobs.error END,
+                    updated_at = CASE WHEN jobs.state IN ('failed', 'dead') THEN excluded.updated_at ELSE jobs.updated_at END
+                RETURNING job_id, state, created_at
+                """,
                 (job.type, job.doc_id, json.dumps(job.payload), job.priority, now, now),
-            )
-            return {"job_id": cur.lastrowid, "state": "pending"}
-    except sqlite3.IntegrityError:
-        # Job exists; query it
-        cur = conn.execute(
-            "SELECT job_id, state FROM jobs WHERE type=? AND doc_id=?", (job.type, job.doc_id)
-        )
-        row = cur.fetchone()
-        job_id = row["job_id"]
-        state = row["state"]
+            ).fetchone()
+    finally:
+        conn.close()
 
-        # If existing state is failed or dead, reset to pending and clear attempts
-        if state in ("failed", "dead"):
-            with conn:
-                conn.execute(
-                    "UPDATE jobs SET state='pending', attempts=0, error=NULL, updated_at=? WHERE job_id=?",
-                    (now, job_id),
-                )
-            state = "pending"
-
-        return {"job_id": job_id, "state": state, "deduped": True}
+    result = {"job_id": row["job_id"], "state": row["state"]}
+    if row["created_at"] != now:
+        result["deduped"] = True
+    return result
 
 
 @app.post("/lease")
@@ -424,39 +429,52 @@ def release(req: ReleasePayload):
 
 @app.get("/status")
 def status():
+    # Shield the DB: /status runs three GROUP BY/ORDER BY scans over jobs. Serve a
+    # memoized snapshot for up to _STATUS_TTL_SECONDS so heavy dashboard polling
+    # can't starve the write lock. Cache uses a monotonic clock (immune to NTP
+    # steps); the small staleness window is acceptable for a status view.
+    cached = _status_cache["data"]
+    if cached is not None and time.monotonic() < _status_cache["expires"]:
+        return cached
+
     conn = connect(cfg)
+    try:
+        # Counts by (type, state)
+        cur = conn.execute("SELECT type, state, COUNT(*) as count FROM jobs GROUP BY type, state")
+        counts: dict[str, dict[str, int]] = {}
+        for row in cur.fetchall():
+            t, s, c = row["type"], row["state"], row["count"]
+            if t not in counts:
+                counts[t] = {}
+            counts[t][s] = c
 
-    # Counts by (type, state)
-    cur = conn.execute("SELECT type, state, COUNT(*) as count FROM jobs GROUP BY type, state")
-    counts = {}
-    for row in cur.fetchall():
-        t, s, c = row["type"], row["state"], row["count"]
-        if t not in counts:
-            counts[t] = {}
-        counts[t][s] = c
+        # Active leases / workers
+        cur = conn.execute(
+            "SELECT lease_owner, MAX(updated_at) as last_seen FROM jobs WHERE state='leased' GROUP BY lease_owner"
+        )
+        workers = {row["lease_owner"]: row["last_seen"] for row in cur.fetchall()}
 
-    # Active leases / workers
-    cur = conn.execute(
-        "SELECT lease_owner, MAX(updated_at) as last_seen FROM jobs WHERE state='leased' GROUP BY lease_owner"
-    )
-    workers = {row["lease_owner"]: row["last_seen"] for row in cur.fetchall()}
+        # 5 most recent dead jobs with errors
+        cur = conn.execute(
+            "SELECT type, doc_id, lease_owner, error, updated_at FROM jobs WHERE state='dead' ORDER BY updated_at DESC LIMIT 5"
+        )
+        dead_jobs = [
+            {
+                "type": row["type"],
+                "doc_id": row["doc_id"],
+                "worker": row["lease_owner"],
+                "error": row["error"],
+                "updated_at": row["updated_at"],
+            }
+            for row in cur.fetchall()
+        ]
+    finally:
+        conn.close()
 
-    # 5 most recent dead jobs with errors
-    cur = conn.execute(
-        "SELECT type, doc_id, lease_owner, error, updated_at FROM jobs WHERE state='dead' ORDER BY updated_at DESC LIMIT 5"
-    )
-    dead_jobs = [
-        {
-            "type": row["type"],
-            "doc_id": row["doc_id"],
-            "worker": row["lease_owner"],
-            "error": row["error"],
-            "updated_at": row["updated_at"],
-        }
-        for row in cur.fetchall()
-    ]
-
-    return {"job_counts": counts, "active_workers": workers, "recent_dead_jobs": dead_jobs}
+    result = {"job_counts": counts, "active_workers": workers, "recent_dead_jobs": dead_jobs}
+    _status_cache["data"] = result
+    _status_cache["expires"] = time.monotonic() + _STATUS_TTL_SECONDS
+    return result
 
 
 @app.get("/file/{doc_id}.pdf")

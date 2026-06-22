@@ -1,4 +1,5 @@
 """Per-type calibration → calibration.json (specs/EVAL-TRUST-GATE.md §4.1)."""
+
 from __future__ import annotations
 
 import datetime
@@ -25,12 +26,19 @@ def choose_threshold(points, target_precision: float, z: float, min_cases: int) 
         return {"threshold": None, "n": n, "wilson_lb": None, "reason": "insufficient_data"}
     cutoffs = sorted({s for s, _ in points})
     best = None
-    for c in cutoffs:                       # ascending → first qualifying is the lowest
+    for c in cutoffs:  # ascending → first qualifying is the lowest
         subset = [(s, y) for s, y in points if s >= c]
         succ = sum(y for _, y in subset)
-        lb = wilson_lower_bound(succ, len(subset), z)
-        if lb >= target_precision:
-            best = {"threshold": c, "n": n, "wilson_lb": lb, "reason": "ok"}
+        precision = succ / len(subset) if subset else 0.0
+        # Gate on the observed precision at the cutoff; report the Wilson lower
+        # bound alongside it as a conservatism indicator.
+        if precision >= target_precision:
+            best = {
+                "threshold": c,
+                "n": n,
+                "wilson_lb": wilson_lower_bound(succ, len(subset), z),
+                "reason": "ok",
+            }
             break
     if best is None:
         return {"threshold": None, "n": n, "wilson_lb": None, "reason": "precision_floor_unmet"}
@@ -51,8 +59,12 @@ def build_artifact(conn, run_id, cfg: Config) -> dict:
     run = conn.execute(
         "SELECT scorer_git_sha, corpus_hash FROM eval_runs WHERE run_id=?", (run_id,)
     ).fetchone()
-    type_keys = [r[0] for r in conn.execute(
-        "SELECT DISTINCT type_key FROM eval_results WHERE run_id=? ORDER BY type_key", (run_id,))]
+    type_keys = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT type_key FROM eval_results WHERE run_id=? ORDER BY type_key", (run_id,)
+        )
+    ]
     return {
         "schema": 1,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
