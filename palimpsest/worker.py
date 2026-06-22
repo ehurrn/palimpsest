@@ -18,10 +18,7 @@ log_file = Path.home() / "palimpsest-worker.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stderr),
-        logging.FileHandler(log_file)
-    ]
+    handlers=[logging.StreamHandler(sys.stderr), logging.FileHandler(log_file)],
 )
 
 cfg = load()
@@ -55,8 +52,10 @@ def signal_handler(signum, frame):
         except Exception as e:
             logging.warning(f"Could not release job {job_id} on shutdown: {e}")
 
+
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
+
 
 def _post_with_retry(
     client: httpx.Client,
@@ -76,24 +75,28 @@ def _post_with_retry(
             return
         except httpx.RequestError as exc:
             if attempt == max_retries - 1:
-                logging.error(
-                    f"Failed to POST {url} after {max_retries} attempts: {exc}"
-                )
+                logging.error(f"Failed to POST {url} after {max_retries} attempts: {exc}")
             else:
-                sleep_secs = 2 ** attempt
+                sleep_secs = 2**attempt
                 logging.warning(
-                    f"POST {url} attempt {attempt + 1} failed ({exc}); "
-                    f"retrying in {sleep_secs}s..."
+                    f"POST {url} attempt {attempt + 1} failed ({exc}); retrying in {sleep_secs}s..."
                 )
                 time.sleep(sleep_secs)
 
 
-def warm_model(model_name: str, embed: bool = False):
-    url = "http://localhost:11434/api/embeddings" if embed else "http://localhost:11434/api/generate"
-    payload = {
-        "model": model_name,
-        "keep_alive": cfg.models["keep_alive"]
-    }
+def warm_model(client: httpx.Client, model_name: str, embed: bool = False):
+    """Ping ollama to keep a model resident, reusing the caller's connection pool.
+
+    Args:
+        client: Shared httpx.Client so repeated warmups reuse TCP connections
+            instead of building and tearing down a pool on every call.
+        model_name: Ollama model tag to warm.
+        embed: Hit the embeddings endpoint instead of generate when True.
+    """
+    url = (
+        "http://localhost:11434/api/embeddings" if embed else "http://localhost:11434/api/generate"
+    )
+    payload: dict[str, object] = {"model": model_name, "keep_alive": cfg.models["keep_alive"]}
     if embed:
         payload["input"] = "warmup"
     else:
@@ -102,27 +105,31 @@ def warm_model(model_name: str, embed: bool = False):
 
     start_time = time.time()
     try:
-        resp = httpx.post(url, json=payload, timeout=30.0)
+        resp = client.post(url, json=payload, timeout=30.0)
         duration = time.time() - start_time
         logging.info(f"Warmed model {model_name} in {duration:.2f}s (status {resp.status_code})")
     except Exception as e:
         logging.warning(f"Could not warm model {model_name}: {e}")
 
-def warm_all_models(capabilities: list[str]):
+
+def warm_all_models(client: httpx.Client, capabilities: list[str]):
     logging.info("Warming up models...")
     warmed = set()
     for cap in capabilities:
         if cap == "classify" and "classify" not in warmed:
-            warm_model(cfg.models["classify"])
+            warm_model(client, cfg.models["classify"])
             warmed.add("classify")
         elif cap == "extract" and "extract" not in warmed:
-            warm_model(cfg.models["extract"])
+            warm_model(client, cfg.models["extract"])
             warmed.add("extract")
         elif cap == "embed" and "embed" not in warmed:
-            warm_model(cfg.embed["model"], embed=True)
+            warm_model(client, cfg.embed["model"], embed=True)
             warmed.add("embed")
 
-def heartbeat_loop(worker_id: str, job_id: int, stop_evt: threading.Event, lost_evt: threading.Event):
+
+def heartbeat_loop(
+    worker_id: str, job_id: int, stop_evt: threading.Event, lost_evt: threading.Event
+):
     broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
     interval = cfg.broker["heartbeat_seconds"]
 
@@ -132,7 +139,7 @@ def heartbeat_loop(worker_id: str, job_id: int, stop_evt: threading.Event, lost_
                 resp = client.post(
                     f"{broker_url}/heartbeat",
                     json={"worker_id": worker_id, "job_ids": [job_id]},
-                    timeout=5.0
+                    timeout=5.0,
                 )
                 if resp.status_code == 200:
                     lost = resp.json().get("lost", [])
@@ -142,6 +149,7 @@ def heartbeat_loop(worker_id: str, job_id: int, stop_evt: threading.Event, lost_
                         break
             except Exception as e:
                 logging.error(f"Heartbeat failed for job {job_id}: {e}")
+
 
 def run_worker(node_name: str, once: bool = False):
     global should_exit, broker_backoff, _current_job_id, _current_worker_id
@@ -153,27 +161,23 @@ def run_worker(node_name: str, once: bool = False):
 
     logging.info(f"Starting worker daemon for {node_name} with capabilities: {capabilities}")
 
-    warm_all_models(capabilities)
-    last_warm_time = time.time()
-
     broker_url = f"http://{cfg.broker['host']}:{cfg.broker['port']}"
 
     with httpx.Client() as client:
+        warm_all_models(client, capabilities)
+        last_warm_time = time.time()
+
         while not should_exit:
             now_time = time.time()
             if now_time - last_warm_time > 300:
-                warm_all_models(capabilities)
+                warm_all_models(client, capabilities)
                 last_warm_time = now_time
 
             try:
                 resp = client.post(
                     f"{broker_url}/lease",
-                    json={
-                        "worker_id": node_name,
-                        "capabilities": capabilities,
-                        "max_jobs": 1
-                    },
-                    timeout=10.0
+                    json={"worker_id": node_name, "capabilities": capabilities, "max_jobs": 1},
+                    timeout=10.0,
                 )
 
                 broker_backoff = 5.0
@@ -211,9 +215,7 @@ def run_worker(node_name: str, once: bool = False):
                 stop_evt = threading.Event()
                 lost_evt = threading.Event()
                 hb_thread = threading.Thread(
-                    target=heartbeat_loop,
-                    args=(node_name, job_id, stop_evt, lost_evt),
-                    daemon=True
+                    target=heartbeat_loop, args=(node_name, job_id, stop_evt, lost_evt), daemon=True
                 )
                 hb_thread.start()
 
@@ -240,7 +242,9 @@ def run_worker(node_name: str, once: bool = False):
                     continue
 
                 try:
-                    result = handler_func(cfg, job, lost_evt=lost_evt, shutdown_event=shutdown_event)
+                    result = handler_func(
+                        cfg, job, lost_evt=lost_evt, shutdown_event=shutdown_event
+                    )
                     duration = time.time() - start_time
 
                     if lost_evt.is_set():
@@ -255,7 +259,9 @@ def run_worker(node_name: str, once: bool = False):
                                 "result": result,
                             },
                         )
-                        logging.info(f"Completed job {job_id} ({job_type}) for doc {doc_id} in {duration:.2f}s")
+                        logging.info(
+                            f"Completed job {job_id} ({job_type}) for doc {doc_id} in {duration:.2f}s"
+                        )
                 except PermanentJobError as e:
                     logging.error(f"Permanent handler error on job {job_id}: {e}")
                     _post_with_retry(
@@ -299,9 +305,12 @@ def run_worker(node_name: str, once: bool = False):
                 if shutdown_event.is_set():
                     break
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Palimpsest Worker Daemon")
-    parser.add_argument("--node", type=str, required=True, help="Name of the node (e.g. m4, gonktop)")
+    parser.add_argument(
+        "--node", type=str, required=True, help="Name of the node (e.g. m4, gonktop)"
+    )
     args = parser.parse_args()
 
     run_worker(args.node)

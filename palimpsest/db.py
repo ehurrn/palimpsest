@@ -12,6 +12,7 @@ def connect(cfg: Config) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def migrate(cfg: Config) -> None:
     conn = connect(cfg)
     with conn:
@@ -168,6 +169,12 @@ def migrate(cfg: Config) -> None:
               score REAL,
               status TEXT DEFAULT 'candidate'
             );
+
+            -- Hot-path indexes. The broker polls jobs on (state, type, priority)
+            -- every /lease, and the orchestrator/harvest_stats scan documents on
+            -- (status, has_fulltext); without these both full-scan every tick.
+            CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(state, type, priority);
+            CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status, has_fulltext);
         """)
         version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
 
@@ -264,8 +271,10 @@ def migrate(cfg: Config) -> None:
             conn.execute("UPDATE schema_version SET version = 4")
     conn.close()
 
+
 if __name__ == "__main__":
     from palimpsest.config import load
+
     cfg = load()
     migrate(cfg)
     conn = connect(cfg)

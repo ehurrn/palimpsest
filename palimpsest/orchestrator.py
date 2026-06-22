@@ -19,6 +19,7 @@ Usage:
     palimpsest-orchestrator daemon [--config PATH]
     palimpsest-orchestrator investigate <accession> [--config PATH]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -51,9 +52,7 @@ logging.basicConfig(
 def _candidate_count(conn: sqlite3.Connection, scorer) -> int:
     """Return current row count in the scorer's candidates table."""
     try:
-        row = conn.execute(
-            f"SELECT COUNT(*) FROM {scorer.candidates_table}"
-        ).fetchone()
+        row = conn.execute(f"SELECT COUNT(*) FROM {scorer.candidates_table}").fetchone()
         return row[0] if row else 0
     except Exception:
         return 0
@@ -69,28 +68,22 @@ def _enqueue_pending_gap_joins(conn: sqlite3.Connection, now: str) -> int:
     Returns:
         Number of jobs newly enqueued.
     """
-    rows = conn.execute("""
-        SELECT DISTINCT r.doc_id
-        FROM redactions r
-        LEFT JOIN gapjoin_runs g ON r.redaction_id = g.redaction_id
-        WHERE g.redaction_id IS NULL
-    """).fetchall()
-
-    enqueued = 0
-    for row in rows:
-        doc_id = row["doc_id"]
-        try:
-            conn.execute(
-                "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) "
-                "VALUES ('gap_join', ?, '{}', 'pending', 5, ?, ?)",
-                (doc_id, now, now),
-            )
-            enqueued += 1
-        except sqlite3.IntegrityError:
-            pass
-    if enqueued:
-        conn.commit()
-    return enqueued
+    # SQL-native: INSERT OR IGNORE relies on UNIQUE(type, doc_id) to skip docs
+    # that already have a gap_join job, avoiding a SELECT + per-row insert loop
+    # leaning on try/except IntegrityError. rowcount counts only real inserts.
+    with conn:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO jobs
+                (type, doc_id, payload, state, priority, created_at, updated_at)
+            SELECT DISTINCT 'gap_join', r.doc_id, '{}', 'pending', 5, ?, ?
+            FROM redactions r
+            LEFT JOIN gapjoin_runs g ON r.redaction_id = g.redaction_id
+            WHERE g.redaction_id IS NULL
+            """,
+            (now, now),
+        )
+        return cur.rowcount
 
 
 def _worker_alive(config: Config) -> bool:
@@ -133,14 +126,18 @@ def heartbeat_cycle(config: Config) -> dict[str, int]:
         if before >= low_water:
             logger.info(
                 "Heartbeat: %s has %d candidates (>= %d low-water mark) — skipping.",
-                type_key, before, low_water,
+                type_key,
+                before,
+                low_water,
             )
             results[type_key] = 0
             continue
 
         logger.info(
             "Heartbeat: %s has %d candidates (< %d low-water mark) — running scorer.",
-            type_key, before, low_water,
+            type_key,
+            before,
+            low_water,
         )
         try:
             inserted = scorer.run(conn, config)
@@ -152,7 +149,9 @@ def heartbeat_cycle(config: Config) -> dict[str, int]:
         after = _candidate_count(conn, scorer)
         logger.info(
             "Heartbeat: %s inserted %d new candidates (total now %d).",
-            type_key, delta, after,
+            type_key,
+            delta,
+            after,
         )
         results[type_key] = delta
 
@@ -191,27 +190,21 @@ def enqueue_brief(config: Config, status_filter: str = "indexed") -> int:
         Number of new jobs enqueued.
     """
     conn = connect(config)
-    conn.row_factory = sqlite3.Row
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    rows = conn.execute(
-        "SELECT doc_id FROM documents WHERE status = ?",
-        (status_filter,),
-    ).fetchall()
-
-    enqueued = 0
+    # SQL-native bulk enqueue. INSERT OR IGNORE skips docs that already have a
+    # brief job via UNIQUE(type, doc_id); rowcount is the number actually added.
     with conn:
-        for row in rows:
-            doc_id = row["doc_id"]
-            try:
-                conn.execute(
-                    "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) "
-                    "VALUES ('brief', ?, '{}', 'pending', 5, ?, ?)",
-                    (doc_id, now, now),
-                )
-                enqueued += 1
-            except sqlite3.IntegrityError:
-                pass  # job already exists for this doc
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO jobs
+                (type, doc_id, payload, state, priority, created_at, updated_at)
+            SELECT 'brief', doc_id, '{}', 'pending', 5, ?, ?
+            FROM documents WHERE status = ?
+            """,
+            (now, now, status_filter),
+        )
+        enqueued = cur.rowcount
 
     conn.close()
     logger.info("enqueue-brief: enqueued %d job(s) for status='%s'.", enqueued, status_filter)
@@ -242,15 +235,14 @@ def investigate(accession: str, config: Config) -> Path:
     doc_ids = [r["doc_id"] for r in matching_docs]
 
     if not doc_ids:
-        logger.warning(
-            "investigate: no documents found with accession prefix '%s'.", accession
-        )
+        logger.warning("investigate: no documents found with accession prefix '%s'.", accession)
         conn.close()
         return out_path
 
     logger.info(
         "investigate: found %d document(s) for accession '%s'.",
-        len(doc_ids), accession,
+        len(doc_ids),
+        accession,
     )
 
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

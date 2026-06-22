@@ -44,6 +44,7 @@ def validate_doc_id(doc_id: str) -> str:
         raise HTTPException(status_code=400, detail="Invalid document ID")
     return doc_id
 
+
 # Body request models
 class EnqueuePayload(BaseModel):
     type: str
@@ -51,19 +52,23 @@ class EnqueuePayload(BaseModel):
     priority: int = 5
     payload: dict = {}
 
+
 class LeasePayload(BaseModel):
     worker_id: str
     capabilities: List[str]
     max_jobs: int = 1
 
+
 class HeartbeatPayload(BaseModel):
     worker_id: str
     job_ids: List[int]
+
 
 class CompletePayload(BaseModel):
     worker_id: str
     job_id: int
     result: Any
+
 
 class FailPayload(BaseModel):
     worker_id: str
@@ -71,13 +76,16 @@ class FailPayload(BaseModel):
     error: str
     retryable: bool
 
+
 class ReleasePayload(BaseModel):
     worker_id: str
     job_id: int
 
+
 # Helper for UTC ISO-8601 timestamps
 def utc_now_str() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
 
 def reap_leases():
     """Find leased jobs whose leases have expired and return them to pending or dead.
@@ -90,25 +98,19 @@ def reap_leases():
     max_attempts = cfg.broker["max_attempts"]
     try:
         with conn:
-            # Get expired leases
-            cur = conn.execute(
-                "SELECT job_id, attempts FROM jobs WHERE state='leased' AND lease_expires_at < ?",
-                (now,)
+            # Bulk set-based UPDATEs (no SELECT + per-row Python loop): minimises
+            # the write-lock hold time and WAL contention. The two WHERE clauses
+            # are disjoint on `attempts`, so order is irrelevant.
+            conn.execute(
+                "UPDATE jobs SET state='dead', error='Lease expired and max attempts exceeded', updated_at=? "
+                "WHERE state='leased' AND lease_expires_at < ? AND attempts >= ?",
+                (now, now, max_attempts),
             )
-            expired = cur.fetchall()
-            for row in expired:
-                job_id = row["job_id"]
-                attempts = row["attempts"]
-                if attempts >= max_attempts:
-                    conn.execute(
-                        "UPDATE jobs SET state='dead', error='Lease expired and max attempts exceeded', updated_at=? WHERE job_id=?",
-                        (now, job_id)
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE jobs SET state='pending', updated_at=? WHERE job_id=?",
-                        (now, job_id)
-                    )
+            conn.execute(
+                "UPDATE jobs SET state='pending', updated_at=? "
+                "WHERE state='leased' AND lease_expires_at < ? AND attempts < ?",
+                (now, now, max_attempts),
+            )
     except sqlite3.OperationalError as e:
         # "database is locked" / "database is busy" — transient; retry next tick.
         if "lock" in str(e).lower() or "busy" in str(e).lower():
@@ -117,6 +119,7 @@ def reap_leases():
     finally:
         conn.close()
 
+
 def revive_dead_jobs() -> int:
     """Reset jobs that have been dead longer than dead_retry_minutes back to pending.
 
@@ -124,8 +127,7 @@ def revive_dead_jobs() -> int:
     """
     retry_minutes = cfg.broker.get("dead_retry_minutes", 30)
     cutoff = (
-        datetime.datetime.now(datetime.timezone.utc)
-        - datetime.timedelta(minutes=retry_minutes)
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=retry_minutes)
     ).isoformat()
     now = utc_now_str()
     conn = connect(cfg)
@@ -155,6 +157,7 @@ def reaper_loop():
         except Exception:
             pass
         time.sleep(60)
+
 
 # Held open for the process lifetime to keep the cross-process reaper lock.
 _reaper_lock_handle = None
@@ -216,12 +219,14 @@ def enqueue(job: EnqueuePayload):
         with conn:
             cur = conn.execute(
                 "INSERT INTO jobs (type, doc_id, payload, state, priority, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?, ?)",
-                (job.type, job.doc_id, json.dumps(job.payload), job.priority, now, now)
+                (job.type, job.doc_id, json.dumps(job.payload), job.priority, now, now),
             )
             return {"job_id": cur.lastrowid, "state": "pending"}
     except sqlite3.IntegrityError:
         # Job exists; query it
-        cur = conn.execute("SELECT job_id, state FROM jobs WHERE type=? AND doc_id=?", (job.type, job.doc_id))
+        cur = conn.execute(
+            "SELECT job_id, state FROM jobs WHERE type=? AND doc_id=?", (job.type, job.doc_id)
+        )
         row = cur.fetchone()
         job_id = row["job_id"]
         state = row["state"]
@@ -231,81 +236,90 @@ def enqueue(job: EnqueuePayload):
             with conn:
                 conn.execute(
                     "UPDATE jobs SET state='pending', attempts=0, error=NULL, updated_at=? WHERE job_id=?",
-                    (now, job_id)
+                    (now, job_id),
                 )
             state = "pending"
 
         return {"job_id": job_id, "state": state, "deduped": True}
 
+
 @app.post("/lease")
 def lease(req: LeasePayload):
+    if not req.capabilities:
+        return {"jobs": []}
+
     conn = connect(cfg)
     now = datetime.datetime.now(datetime.timezone.utc)
     expires = (now + datetime.timedelta(seconds=cfg.broker["lease_ttl_seconds"])).isoformat()
     now_str = now.isoformat()
 
-    if not req.capabilities:
-        return {"jobs": []}
-
+    # Single atomic UPDATE ... RETURNING. SQLite serialises writers, so the inner
+    # SELECT is evaluated while this statement holds the write lock; a concurrent
+    # /lease blocks (busy_timeout) and then re-reads — it cannot select the same
+    # pending rows and double-lease them. Replaces the explicit BEGIN IMMEDIATE +
+    # SELECT + per-row UPDATE loop.
     caps_placeholders = ",".join("?" for _ in req.capabilities)
-    query = (
-        f"SELECT job_id, type, doc_id, payload FROM jobs"
-        f" WHERE state='pending' AND type IN ({caps_placeholders})"
-        f" ORDER BY priority ASC, job_id ASC LIMIT ?"
-    )
-    params = req.capabilities + [req.max_jobs]
+    query = f"""
+        UPDATE jobs
+        SET state='leased', lease_owner=?, lease_expires_at=?, attempts=attempts+1, updated_at=?
+        WHERE job_id IN (
+            SELECT job_id FROM jobs
+            WHERE state='pending' AND type IN ({caps_placeholders})
+            ORDER BY priority ASC, job_id ASC
+            LIMIT ?
+        )
+        RETURNING job_id, type, doc_id, payload
+    """
+    params: list[Any] = [req.worker_id, expires, now_str, *req.capabilities, req.max_jobs]
 
-    # BEGIN IMMEDIATE acquires the write lock before the SELECT so concurrent
-    # /lease calls cannot read the same pending rows and double-lease them.
-    # On lock contention SQLite will retry for busy_timeout ms before raising.
-    leased_jobs = []
-    conn.execute("BEGIN IMMEDIATE")
     try:
-        rows = conn.execute(query, params).fetchall()
-        for row in rows:
-            job_id = row["job_id"]
-            conn.execute(
-                "UPDATE jobs SET state='leased', lease_owner=?, lease_expires_at=?, attempts=attempts+1, updated_at=? WHERE job_id=?",
-                (req.worker_id, expires, now_str, job_id),
-            )
-            leased_jobs.append({
-                "job_id": job_id,
-                "type": row["type"],
-                "doc_id": row["doc_id"],
-                "payload": json.loads(row["payload"]),
-                "lease_expires_at": expires,
-            })
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
+        with conn:
+            rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    leased_jobs = [
+        {
+            "job_id": r["job_id"],
+            "type": r["type"],
+            "doc_id": r["doc_id"],
+            "payload": json.loads(r["payload"]),
+            "lease_expires_at": expires,
+        }
+        for r in rows
+    ]
     return {"jobs": leased_jobs}
+
 
 @app.post("/heartbeat")
 def heartbeat(req: HeartbeatPayload):
+    if not req.job_ids:
+        return {"extended": [], "lost": []}
+
     conn = connect(cfg)
     now = datetime.datetime.now(datetime.timezone.utc)
     expires = (now + datetime.timedelta(seconds=cfg.broker["lease_ttl_seconds"])).isoformat()
-    extended = []
-    lost = []
 
-    with conn:
-        for job_id in req.job_ids:
-            cur = conn.execute(
-                "SELECT lease_owner, state FROM jobs WHERE job_id=?",
-                (job_id,)
-            )
-            row = cur.fetchone()
-            if row and row["lease_owner"] == req.worker_id and row["state"] == "leased":
-                conn.execute(
-                    "UPDATE jobs SET lease_expires_at=?, updated_at=? WHERE job_id=?",
-                    (expires, now.isoformat(), job_id)
-                )
-                extended.append(job_id)
-            else:
-                lost.append(job_id)
+    # One batched UPDATE ... RETURNING extends every lease this worker still owns;
+    # any requested id not returned was lost (reassigned, completed, or expired).
+    placeholders = ",".join("?" for _ in req.job_ids)
+    params: list[Any] = [expires, now.isoformat(), req.worker_id, *req.job_ids]
 
+    try:
+        with conn:
+            rows = conn.execute(
+                f"UPDATE jobs SET lease_expires_at=?, updated_at=? "
+                f"WHERE lease_owner=? AND state='leased' AND job_id IN ({placeholders}) "
+                f"RETURNING job_id",
+                params,
+            ).fetchall()
+    finally:
+        conn.close()
+
+    extended = [r["job_id"] for r in rows]
+    lost = list(set(req.job_ids) - set(extended))
     return {"extended": extended, "lost": lost}
+
 
 @app.post("/complete")
 def complete(req: CompletePayload):
@@ -342,6 +356,7 @@ def complete(req: CompletePayload):
         conn.close()
 
     return {"ok": True}
+
 
 @app.post("/fail")
 def fail(req: FailPayload):
@@ -381,6 +396,7 @@ def fail(req: FailPayload):
 
     return {"status": "recorded"}
 
+
 @app.post("/release")
 def release(req: ReleasePayload):
     """Return a leased job to pending without penalising attempts.
@@ -393,9 +409,7 @@ def release(req: ReleasePayload):
     now = utc_now_str()
 
     with conn:
-        cur = conn.execute(
-            "SELECT state, lease_owner FROM jobs WHERE job_id=?", (req.job_id,)
-        )
+        cur = conn.execute("SELECT state, lease_owner FROM jobs WHERE job_id=?", (req.job_id,))
         job = cur.fetchone()
         if not job or job["state"] != "leased" or job["lease_owner"] != req.worker_id:
             raise HTTPException(status_code=409, detail="Ownership mismatch or job not leased")
@@ -422,21 +436,28 @@ def status():
         counts[t][s] = c
 
     # Active leases / workers
-    cur = conn.execute("SELECT lease_owner, MAX(updated_at) as last_seen FROM jobs WHERE state='leased' GROUP BY lease_owner")
+    cur = conn.execute(
+        "SELECT lease_owner, MAX(updated_at) as last_seen FROM jobs WHERE state='leased' GROUP BY lease_owner"
+    )
     workers = {row["lease_owner"]: row["last_seen"] for row in cur.fetchall()}
 
     # 5 most recent dead jobs with errors
-    cur = conn.execute("SELECT type, doc_id, lease_owner, error, updated_at FROM jobs WHERE state='dead' ORDER BY updated_at DESC LIMIT 5")
+    cur = conn.execute(
+        "SELECT type, doc_id, lease_owner, error, updated_at FROM jobs WHERE state='dead' ORDER BY updated_at DESC LIMIT 5"
+    )
     dead_jobs = [
-        {"type": row["type"], "doc_id": row["doc_id"], "worker": row["lease_owner"], "error": row["error"], "updated_at": row["updated_at"]}
+        {
+            "type": row["type"],
+            "doc_id": row["doc_id"],
+            "worker": row["lease_owner"],
+            "error": row["error"],
+            "updated_at": row["updated_at"],
+        }
         for row in cur.fetchall()
     ]
 
-    return {
-        "job_counts": counts,
-        "active_workers": workers,
-        "recent_dead_jobs": dead_jobs
-    }
+    return {"job_counts": counts, "active_workers": workers, "recent_dead_jobs": dead_jobs}
+
 
 @app.get("/file/{doc_id}.pdf")
 def get_file(doc_id: str):
@@ -445,6 +466,7 @@ def get_file(doc_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path)
+
 
 @app.get("/jobs/dead")
 def list_dead_jobs(type: str = "ocr"):
