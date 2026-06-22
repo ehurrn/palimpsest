@@ -4,10 +4,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict
 
-if sys.version_info < (3, 12):
-    import tomli as tomllib
-else:
+if sys.version_info >= (3, 11):
     import tomllib
+else:  # pragma: no cover - fallback for Python < 3.11, below requires-python floor
+    import tomli as tomllib
 
 
 class ConfigError(Exception):
