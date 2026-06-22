@@ -1,22 +1,29 @@
 import os
-import pytest
 from unittest.mock import MagicMock, patch
 
-from palimpsest.tasks import handler, HANDLERS, PermanentJobError
+import pytest
+
+from palimpsest.tasks import HANDLERS, PermanentJobError, handler
 from palimpsest.worker import run_worker
 
-# Dummy tasks for testing
+
+# Dummy tasks for testing. Handlers receive optional lost_evt/shutdown_event
+# control events as keyword args (see palimpsest.tasks signature); the dummies
+# ignore them via **kwargs.
 @handler("dummy_ok")
-def dummy_ok_handler(cfg, job):
+def dummy_ok_handler(cfg, job, **kwargs):
     return {"status": "ok"}
 
+
 @handler("dummy_fail")
-def dummy_fail_handler(cfg, job):
+def dummy_fail_handler(cfg, job, **kwargs):
     raise Exception("Normal failure")
 
+
 @handler("dummy_permanent_fail")
-def dummy_permanent_fail_handler(cfg, job):
+def dummy_permanent_fail_handler(cfg, job, **kwargs):
     raise PermanentJobError("Permanent failure")
+
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_config(tmp_path_factory):
@@ -76,10 +83,12 @@ def setup_config(tmp_path_factory):
     os.environ["PALIMPSEST_CONFIG"] = str(cfg_file)
     yield cfg_file
 
+
 def test_registry():
     assert "dummy_ok" in HANDLERS
     assert "dummy_fail" in HANDLERS
     assert "dummy_permanent_fail" in HANDLERS
+
 
 @patch("httpx.Client.post")
 @patch("httpx.Client.get")
@@ -88,26 +97,19 @@ def test_worker_lease_and_complete(mock_get, mock_post, setup_config):
     mock_warm_resp = MagicMock()
     mock_warm_resp.status_code = 200
     mock_post.return_value = mock_warm_resp
-    
+
     # Mock /lease response
     mock_lease_resp = MagicMock()
     mock_lease_resp.status_code = 200
     mock_lease_resp.json.return_value = {
-        "jobs": [
-            {
-                "job_id": 42,
-                "type": "dummy_ok",
-                "doc_id": "100",
-                "payload": {}
-            }
-        ]
+        "jobs": [{"job_id": 42, "type": "dummy_ok", "doc_id": "100", "payload": {}}]
     }
-    
+
     # Mock /complete response
     mock_complete_resp = MagicMock()
     mock_complete_resp.status_code = 200
     mock_complete_resp.json.return_value = {"ok": True}
-    
+
     # Define side effects for client.post:
     # First call: warming (we will mock client.post to return 200 for model warming)
     # Next call: /lease
@@ -119,11 +121,11 @@ def test_worker_lease_and_complete(mock_get, mock_post, setup_config):
             return mock_complete_resp
         else:
             return mock_warm_resp
-            
+
     mock_post.side_effect = post_side_effect
-    
+
     run_worker("m4", once=True)
-    
+
     # Assert complete was posted
     complete_called = False
     for call in mock_post.call_args_list:
@@ -136,29 +138,23 @@ def test_worker_lease_and_complete(mock_get, mock_post, setup_config):
             assert payload["result"] == {"status": "ok"}
     assert complete_called
 
+
 @patch("httpx.Client.post")
 @patch("httpx.Client.get")
 def test_worker_handler_fail_retryable(mock_get, mock_post, setup_config):
     mock_warm_resp = MagicMock()
     mock_warm_resp.status_code = 200
-    
+
     mock_lease_resp = MagicMock()
     mock_lease_resp.status_code = 200
     mock_lease_resp.json.return_value = {
-        "jobs": [
-            {
-                "job_id": 43,
-                "type": "dummy_fail",
-                "doc_id": "100",
-                "payload": {}
-            }
-        ]
+        "jobs": [{"job_id": 43, "type": "dummy_fail", "doc_id": "100", "payload": {}}]
     }
-    
+
     mock_fail_resp = MagicMock()
     mock_fail_resp.status_code = 200
     mock_fail_resp.json.return_value = {"status": "recorded"}
-    
+
     def post_side_effect(url, **kwargs):
         if "/lease" in url:
             return mock_lease_resp
@@ -166,11 +162,11 @@ def test_worker_handler_fail_retryable(mock_get, mock_post, setup_config):
             return mock_fail_resp
         else:
             return mock_warm_resp
-            
+
     mock_post.side_effect = post_side_effect
-    
+
     run_worker("m4", once=True)
-    
+
     # Assert fail was posted with retryable=True
     fail_called = False
     for call in mock_post.call_args_list:
@@ -184,29 +180,23 @@ def test_worker_handler_fail_retryable(mock_get, mock_post, setup_config):
             assert "Normal failure" in payload["error"]
     assert fail_called
 
+
 @patch("httpx.Client.post")
 @patch("httpx.Client.get")
 def test_worker_handler_fail_permanent(mock_get, mock_post, setup_config):
     mock_warm_resp = MagicMock()
     mock_warm_resp.status_code = 200
-    
+
     mock_lease_resp = MagicMock()
     mock_lease_resp.status_code = 200
     mock_lease_resp.json.return_value = {
-        "jobs": [
-            {
-                "job_id": 44,
-                "type": "dummy_permanent_fail",
-                "doc_id": "100",
-                "payload": {}
-            }
-        ]
+        "jobs": [{"job_id": 44, "type": "dummy_permanent_fail", "doc_id": "100", "payload": {}}]
     }
-    
+
     mock_fail_resp = MagicMock()
     mock_fail_resp.status_code = 200
     mock_fail_resp.json.return_value = {"status": "recorded"}
-    
+
     def post_side_effect(url, **kwargs):
         if "/lease" in url:
             return mock_lease_resp
@@ -214,11 +204,11 @@ def test_worker_handler_fail_permanent(mock_get, mock_post, setup_config):
             return mock_fail_resp
         else:
             return mock_warm_resp
-            
+
     mock_post.side_effect = post_side_effect
-    
+
     run_worker("m4", once=True)
-    
+
     # Assert fail was posted with retryable=False
     fail_called = False
     for call in mock_post.call_args_list:
