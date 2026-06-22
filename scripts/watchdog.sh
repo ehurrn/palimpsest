@@ -279,8 +279,8 @@ check_ollama_worker  || { kill_local "ollama_features_worker"; sleep 1; start_ol
 check_gonktop_broker || { kill_remote "$GONKTOP" "uvicorn.*broker"; sleep 1; start_gonktop_broker; }
 check_gonktop_worker || { kill_remote "$GONKTOP" "palimpsest.worker.*gonktop"; sleep 1; start_gonktop_worker; }
 
-# M5
-check_m5_worker || { kill_remote "$M5" "palimpsest.worker.*m5"; sleep 1; start_m5_worker; }
+# M5 — disabled
+# check_m5_worker || { kill_remote "$M5" "palimpsest.worker.*m5"; sleep 1; start_m5_worker; }
 
 # Harvester — restart if not running
 check_harvester || start_harvester_fetch
